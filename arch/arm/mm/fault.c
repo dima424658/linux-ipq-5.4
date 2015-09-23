@@ -278,6 +278,14 @@ do_page_fault(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, addr);
 
+	/*
+	 * Privileged access aborts with CONFIG_CPU_TTBR0_PAN enabled are
+	 * routed via the translation fault mechanism. Check whether uaccess
+	 * is disabled while in kernel mode.
+	 */
+	if (IS_ENABLED(CONFIG_CPU_TTBR0_PAN) && !user_mode(regs) && uaccess_disabled(regs))
+		goto no_context;
+
 	if (!(flags & FAULT_FLAG_USER))
 		goto lock_mmap;
 
