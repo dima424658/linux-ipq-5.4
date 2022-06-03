@@ -115,8 +115,8 @@ static inline void pgd_set(pgd_t *pgdp, pmd_t *pmdp)
 	pgd_val(*pgdp) = virt_to_phys(pmdp);
 }
 
-#define __pte_page(pte)	((unsigned long) (pte_val(pte) & PAGE_MASK))
-#define pmd_page_vaddr(pmd)	((unsigned long) (pmd_val(pmd)))
+#define __pte_page(pte)	(__va (pte_val(pte) & PAGE_MASK))
+#define pmd_page_vaddr(pmd)	(__va (pmd_val(pmd)))
 
 static inline int pte_none(pte_t pte)
 {
