@@ -118,7 +118,16 @@ static struct ads7846_platform_data nokia770_ads7846_platform_data __initdata = 
 	.debounce_max	= 10,
 	.debounce_tol	= 3,
 	.debounce_rep	= 1,
-	.gpio_pendown	= ADS7846_PENDOWN_GPIO,
+};
+
+static struct gpiod_lookup_table nokia770_ads7846_gpio_table = {
+	/* SPI bus 2, device with chip select 0 */
+	.dev_id = "spi2.0",
+	.table = {
+		GPIO_LOOKUP("gpio-0-15", ADS7846_PENDOWN_GPIO,
+			    "pendown", GPIO_ACTIVE_HIGH),
+		{ }
+	},
 };
 
 static struct spi_board_info nokia770_spi_board_info[] __initdata = {
@@ -274,6 +283,7 @@ static void __init omap_nokia770_init(void)
 	omap_writew((omap_readw(0xfffb5004) & ~2), 0xfffb5004);
 
 	platform_add_devices(nokia770_devices, ARRAY_SIZE(nokia770_devices));
+	gpiod_add_lookup_table(&nokia770_ads7846_gpio_table);
 	nokia770_spi_board_info[1].irq = gpio_to_irq(15);
 	spi_register_board_info(nokia770_spi_board_info,
 				ARRAY_SIZE(nokia770_spi_board_info));
