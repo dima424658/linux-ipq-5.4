@@ -45,6 +45,16 @@ static struct sk_buff *rtl4a_tag_xmit(struct sk_buff *skb,
 	if (unlikely(__skb_put_padto(skb, ETH_ZLEN, false)))
 		return NULL;
 
+	/* Packets over 1496 bytes get dropped unless they get padded
+	 * out to 1518 bytes. 1496 is ETH_DATA_LEN - tag which is hardly
+	 * a coinicidence, and 1518 is ETH_FRAME_LEN + FCS so we define
+	 * the threshold size and padding like this.
+	 */
+	if (skb->len >= (ETH_DATA_LEN - RTL4_A_HDR_LEN)) {
+		if (unlikely(__skb_put_padto(skb, ETH_FRAME_LEN + ETH_FCS_LEN, false)))
+			return NULL;
+	}
+
 	netdev_dbg(dev, "add realtek tag to package to port %d\n",
 		   dp->index);
 	skb_push(skb, RTL4_A_HDR_LEN);
