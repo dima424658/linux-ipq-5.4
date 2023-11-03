@@ -1151,6 +1151,12 @@ static int gmac_map_tx_bufs(struct net_device *netdev, struct sk_buff *skb,
 	if (skb->protocol == htons(ETH_P_8021Q))
 		mtu += VLAN_HLEN;
 
+	if (skb->len > 65535) {
+		/* The field for length is only 16 bits */
+		netdev_err(netdev, "%s: frame too big, max size 65535 bytes\n", __func__);
+		return -E2BIG;
+	}
+
 	word1 = skb->len;
 	word3 = SOF_BIT;
 
@@ -1232,6 +1238,7 @@ static netdev_tx_t gmac_start_xmit(struct sk_buff *skb,
 	struct gmac_txq *txq;
 	int txq_num, nfrags;
 	union dma_rwptr rw;
+	int ret;
 
 	if (skb->len >= 0x10000)
 		goto out_drop_free;
@@ -1269,7 +1276,11 @@ static netdev_tx_t gmac_start_xmit(struct sk_buff *skb,
 		}
 	}
 
-	if (gmac_map_tx_bufs(netdev, skb, txq, &w)) {
+	ret = gmac_map_tx_bufs(netdev, skb, txq, &w);
+	if (ret == -E2BIG)
+		goto out_drop;
+	if (ret) {
+		/* Linearize and retry */
 		if (skb_linearize(skb))
 			goto out_drop;
 
