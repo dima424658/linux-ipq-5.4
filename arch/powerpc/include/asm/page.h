@@ -230,7 +230,7 @@ static inline unsigned long virt_to_pfn(const void *kaddr)
 	return __pa(kaddr) >> PAGE_SHIFT;
 }
 
-static inline const void *pfn_to_kaddr(unsigned long pfn)
+static inline void *pfn_to_kaddr(unsigned long pfn)
 {
 	return __va(pfn << PAGE_SHIFT);
 }
