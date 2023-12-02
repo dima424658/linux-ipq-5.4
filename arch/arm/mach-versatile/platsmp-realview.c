@@ -18,7 +18,6 @@
 #define REALVIEW_SYS_FLAGSSET_OFFSET	0x30
 
 static const struct of_device_id realview_scu_match[] = {
-	{ .compatible = "arm,arm11mp-scu", },
 	{ .compatible = "arm,cortex-a9-scu", },
 	{ .compatible = "arm,cortex-a5-scu", },
 	{ }
@@ -27,7 +26,6 @@ static const struct of_device_id realview_scu_match[] = {
 static const struct of_device_id realview_syscon_match[] = {
         { .compatible = "arm,core-module-integrator", },
         { .compatible = "arm,realview-eb-syscon", },
-        { .compatible = "arm,realview-pb11mp-syscon", },
         { .compatible = "arm,realview-pbx-syscon", },
         { },
 };
