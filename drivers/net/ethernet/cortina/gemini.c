@@ -29,6 +29,7 @@
 #include <linux/of_net.h>
 #include <linux/of_platform.h>
 #include <linux/etherdevice.h>
+#include <linux/if_ether.h>
 #include <linux/if_vlan.h>
 #include <linux/skbuff.h>
 #include <linux/phy.h>
@@ -1142,22 +1143,38 @@ static int gmac_map_tx_bufs(struct net_device *netdev, struct sk_buff *skb,
 	struct gmac_txdesc *txd;
 	skb_frag_t *skb_frag;
 	dma_addr_t mapping;
+	u16 ethertype;
 	void *buffer;
 
 	/* TODO: implement proper TSO using MTU in word3 */
 	word1 = skb->len;
 	word3 = SOF_BIT | skb->len;
 
-	if (skb->ip_summed == CHECKSUM_PARTIAL) {
+	/* Dig out the the ethertype actually in the buffer and not what the
+	 * protocol claims to be. This is the raw data that the checksumming
+	 * offload engine will have to deal with.
+	 */
+	ethertype = ntohs(eth_header_parse_protocol(skb));
+	/* This is the only VLAN type supported by this hardware so check for
+	 * that: the checksumming engine can handle IP and IPv6 inside 802.1Q.
+	 */
+	if (ethertype == ETH_P_8021Q)
+		ethertype = ntohs(__vlan_get_protocol(skb, htons(ethertype), NULL));
+
+	if (ethertype != ETH_P_IP && ethertype != ETH_P_IPV6) {
+		/* Hardware offloaded checksumming isn't working on non-IP frames.
+		 * This happens for example on some DSA switches using a custom
+		 * ethertype. When a frame gets bigger than a standard ethernet
+		 * frame, it also needs to actively bypass the checksumming engine.
+		 * There is no clear explanation to why it is like this, the
+		 * reference manual has left the TSS completely undocumented.
+		 */
+		if (skb->len > ETH_FRAME_LEN)
+			word1 |= TSS_BYPASS_BIT;
+	} else if (skb->ip_summed == CHECKSUM_PARTIAL) {
 		int tcp = 0;
 
-		/* We do not switch off the checksumming on non TCP/UDP
-		 * frames: as is shown from tests, the checksumming engine
-		 * is smart enough to see that a frame is not actually TCP
-		 * or UDP and then just pass it through without any changes
-		 * to the frame.
-		 */
-		if (skb->protocol == htons(ETH_P_IP)) {
+		if (ethertype == ETH_P_IP) {
 			word1 |= TSS_IP_CHKSUM_BIT;
 			tcp = ip_hdr(skb)->protocol == IPPROTO_TCP;
 		} else { /* IPv6 */
