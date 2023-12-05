@@ -1143,7 +1143,9 @@ static int gmac_map_tx_bufs(struct net_device *netdev, struct sk_buff *skb,
 	skb_frag_t *skb_frag;
 	dma_addr_t mapping;
 	unsigned short mtu;
+	u16 ethertype;
 	void *buffer;
+	__be16 *p;
 
 	mtu  = ETH_HLEN;
 	mtu += netdev->mtu;
@@ -1158,7 +1160,24 @@ static int gmac_map_tx_bufs(struct net_device *netdev, struct sk_buff *skb,
 		word3 |= mtu;
 	}
 
-	if (skb->ip_summed == CHECKSUM_PARTIAL) {
+	/* Dig out the the ethertype actually in the buffer and not what the
+	 * protocol claims to be. This is the raw data that the checksumming
+	 * offload engine will have to deal with.
+	 */
+	p = (__be16 *)(skb->data + 2 * ETH_ALEN);
+	ethertype = ntohs(*p);
+	if (ethertype == ETH_P_8021Q) {
+		p += 2; /* +2 sizeof(__be16) */
+		ethertype = ntohs(*p);
+	}
+
+	if (ethertype != ETH_P_IP && ethertype != ETH_P_IPV6) {
+		/* Hardware offloaded checksumming isn't working on non-IP frames.
+		 * This happens for example on some DSA switches using a custom
+		 * ethertype. Just bypass the engine for those.
+		 */
+		word1 |= TSS_BYPASS_BIT;
+	} else if (skb->ip_summed == CHECKSUM_PARTIAL) {
 		int tcp = 0;
 
 		/* We do not switch off the checksumming on non TCP/UDP
