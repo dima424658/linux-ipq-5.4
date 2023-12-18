@@ -174,6 +174,7 @@ create_elf_tables(struct linux_binprm *bprm, const struct elfhdr *exec,
 	int ei_index;
 	const struct cred *cred = current_cred();
 	struct vm_area_struct *vma;
+	unsigned char *test;
 
 	/*
 	 * In some cases (e.g. Hyper-Threading), we want to avoid L1
@@ -219,6 +220,10 @@ create_elf_tables(struct linux_binprm *bprm, const struct elfhdr *exec,
 		       STACK_ALLOC(p, sizeof(k_rand_bytes));
 	if (copy_to_user(u_rand_bytes, k_rand_bytes, sizeof(k_rand_bytes)))
 		return -EFAULT;
+
+	/* Cause a kernelspace access to userspace memory */
+	test = (char *)u_rand_bytes;
+	pr_info("Some byte: %02x\n", *test);
 
 	/* Create the ELF interpreter info */
 	elf_info = (elf_addr_t *)mm->saved_auxv;
