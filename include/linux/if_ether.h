@@ -37,6 +37,22 @@ static inline struct ethhdr *inner_eth_hdr(const struct sk_buff *skb)
 	return (struct ethhdr *)skb_inner_mac_header(skb);
 }
 
+/* This determines the ethertype incoded into the skb data without
+ * relying on skb->protocol which is not always identical.
+ */
+static inline u16 skb_eth_raw_ethertype(struct sk_buff *skb)
+{
+	struct ethhdr *hdr;
+
+	/* If we can't extract a header, return invalid type */
+	if (!pskb_may_pull(skb, ETH_HLEN))
+		return 0x0000U;
+
+	hdr = skb_eth_hdr(skb);
+
+	return ntohs(hdr->h_proto);
+}
+
 int eth_header_parse(const struct sk_buff *skb, unsigned char *haddr);
 
 extern ssize_t sysfs_format_mac(char *buf, const unsigned char *addr, int len);
