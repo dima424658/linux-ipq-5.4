@@ -646,17 +646,12 @@ static bool __init sunxi_mc_smp_cpu_table_init(void)
  *
  * We need the trampoline code to enable CCI-400 on the first cluster
  */
-typedef typeof(cpu_reset) phys_reset_t;
-
 static int __init nocache_trampoline(unsigned long __unused)
 {
-	phys_reset_t phys_reset;
-
 	setup_mm_for_reboot();
 	sunxi_cluster_cache_disable_without_axi();
 
-	phys_reset = (phys_reset_t)(unsigned long)__pa_symbol(cpu_reset);
-	phys_reset(__pa_symbol(sunxi_mc_smp_resume), false);
+	cpu_reset(__pa_symbol(sunxi_mc_smp_resume), false);
 	BUG();
 }
 
