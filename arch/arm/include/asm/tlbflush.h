@@ -210,13 +210,23 @@ struct cpu_tlb_fns {
 	unsigned long tlb_flags;
 };
 
+extern struct cpu_tlb_fns cpu_tlb;
+
+#define __cpu_tlb_flags			cpu_tlb.tlb_flags
+
 /*
  * Select the calling method
  */
 #ifdef MULTI_TLB
 
-#define __cpu_flush_user_tlb_range	cpu_tlb.flush_user_range
-#define __cpu_flush_kern_tlb_range	cpu_tlb.flush_kern_range
+static inline void __nocfi __cpu_flush_user_tlb_range(unsigned long s, unsigned long e, struct vm_area_struct *vma)
+{
+	cpu_tlb.flush_user_range(s, e, vma);
+}
+static inline void __nocfi __cpu_flush_kern_tlb_range(unsigned long s, unsigned long e)
+{
+	cpu_tlb.flush_kern_range(s, e);
+}
 
 #else
 
@@ -227,10 +237,6 @@ extern void __cpu_flush_user_tlb_range(unsigned long, unsigned long, struct vm_a
 extern void __cpu_flush_kern_tlb_range(unsigned long, unsigned long);
 
 #endif
-
-extern struct cpu_tlb_fns cpu_tlb;
-
-#define __cpu_tlb_flags			cpu_tlb.tlb_flags
 
 /*
  *	TLB Management
