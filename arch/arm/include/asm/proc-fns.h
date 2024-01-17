@@ -131,18 +131,55 @@ static inline void init_proc_vtable(const struct processor *p)
 }
 #endif
 
-#define cpu_proc_init			PROC_VTABLE(_proc_init)
-#define cpu_check_bugs			PROC_VTABLE(check_bugs)
-#define cpu_proc_fin			PROC_VTABLE(_proc_fin)
-#define cpu_reset			PROC_VTABLE(reset)
-#define cpu_do_idle			PROC_VTABLE(_do_idle)
-#define cpu_dcache_clean_area		PROC_TABLE(dcache_clean_area)
-#define cpu_set_pte_ext			PROC_TABLE(set_pte_ext)
-#define cpu_do_switch_mm		PROC_VTABLE(switch_mm)
+static inline void __nocfi cpu_proc_init(void)
+{
+	PROC_VTABLE(_proc_init)();
+}
+static inline void __nocfi cpu_check_bugs(void)
+{
+	PROC_VTABLE(check_bugs)();
+}
+static inline void __nocfi cpu_proc_fin(void)
+{
+	PROC_VTABLE(_proc_fin)();
+}
+static inline void __nocfi cpu_reset(unsigned long addr, bool hvc)
+{
+	PROC_VTABLE(reset)(addr, hvc);
+}
+static inline int __nocfi cpu_do_idle(void)
+{
+	return PROC_VTABLE(_do_idle)();
+}
+static inline void __nocfi cpu_dcache_clean_area(void *addr, int size)
+{
+	PROC_TABLE(dcache_clean_area)(addr, size);
+}
+#ifdef CONFIG_ARM_LPAE
+static inline void __nocfi cpu_set_pte_ext(pte_t *ptep, pte_t pte)
+{
+	PROC_TABLE(set_pte_ext)(ptep, pte);
+}
+#else
+static inline void __nocfi cpu_set_pte_ext(pte_t *ptep, pte_t pte, unsigned int ext)
+{
+	PROC_TABLE(set_pte_ext)(ptep, pte, ext);
+}
+#endif
+static inline void __nocfi cpu_do_switch_mm(phys_addr_t pgd_phys, struct mm_struct *mm)
+{
+	PROC_VTABLE(switch_mm)(pgd_phys, mm);
+}
 
 /* These two are private to arch/arm/kernel/suspend.c */
-#define cpu_do_suspend			PROC_VTABLE(do_suspend)
-#define cpu_do_resume			PROC_VTABLE(do_resume)
+static inline void __nocfi cpu_do_suspend(void *p)
+{
+	PROC_VTABLE(do_suspend)(p);
+}
+static inline void __nocfi cpu_do_resume(void *p)
+{
+	PROC_VTABLE(do_resume)(p);
+}
 #endif
 
 extern void cpu_resume(void);

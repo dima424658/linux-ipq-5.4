@@ -234,13 +234,10 @@ int mcpm_cpu_power_up(unsigned int cpu, unsigned int cluster)
 	return ret;
 }
 
-typedef typeof(cpu_reset) phys_reset_t;
-
 void mcpm_cpu_power_down(void)
 {
 	unsigned int mpidr, cpu, cluster;
 	bool cpu_going_down, last_man;
-	phys_reset_t phys_reset;
 
 	mpidr = read_cpuid_mpidr();
 	cpu = MPIDR_AFFINITY_LEVEL(mpidr, 0);
@@ -298,8 +295,7 @@ void mcpm_cpu_power_down(void)
 	 * the kernel as if the power_up method just had deasserted reset
 	 * on the CPU.
 	 */
-	phys_reset = (phys_reset_t)(unsigned long)__pa_symbol(cpu_reset);
-	phys_reset(__pa_symbol(mcpm_entry_point), false);
+	cpu_reset(__pa_symbol(mcpm_entry_point), false);
 
 	/* should never get here */
 	BUG();
@@ -376,7 +372,6 @@ static int __init nocache_trampoline(unsigned long _arg)
 	unsigned int mpidr = read_cpuid_mpidr();
 	unsigned int cpu = MPIDR_AFFINITY_LEVEL(mpidr, 0);
 	unsigned int cluster = MPIDR_AFFINITY_LEVEL(mpidr, 1);
-	phys_reset_t phys_reset;
 
 	mcpm_set_entry_vector(cpu, cluster, cpu_resume_no_hyp);
 	setup_mm_for_reboot();
@@ -387,8 +382,7 @@ static int __init nocache_trampoline(unsigned long _arg)
 	__mcpm_outbound_leave_critical(cluster, CLUSTER_DOWN);
 	__mcpm_cpu_down(cpu, cluster);
 
-	phys_reset = (phys_reset_t)(unsigned long)__pa_symbol(cpu_reset);
-	phys_reset(__pa_symbol(mcpm_entry_point), false);
+	cpu_reset(__pa_symbol(mcpm_entry_point), false);
 	BUG();
 }
 
