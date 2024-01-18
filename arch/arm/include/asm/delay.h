@@ -55,7 +55,10 @@ extern struct arm_delay_ops {
 	unsigned long ticks_per_jiffy;
 } arm_delay_ops;
 
-#define __delay(n)		arm_delay_ops.delay(n)
+static inline void __nocfi __delay(unsigned long n)
+{
+	arm_delay_ops.delay(n);
+}
 
 /*
  * This function intentionally does not exist; if you see references to
@@ -76,8 +79,15 @@ extern void __bad_udelay(void);
  * first constant multiplications gets optimized away if the delay is
  * a constant)
  */
-#define __udelay(n)		arm_delay_ops.udelay(n)
-#define __const_udelay(n)	arm_delay_ops.const_udelay(n)
+static inline void __nocfi __udelay(unsigned long n)
+{
+	arm_delay_ops.udelay(n);
+}
+
+static inline void __nocfi __const_udelay(unsigned long n)
+{
+	arm_delay_ops.const_udelay(n);
+}
 
 #define udelay(n)							\
 	(__builtin_constant_p(n) ?					\
