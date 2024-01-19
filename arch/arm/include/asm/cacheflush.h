@@ -122,14 +122,38 @@ struct cpu_cache_fns {
 
 extern struct cpu_cache_fns cpu_cache;
 
-#define __cpuc_flush_icache_all		cpu_cache.flush_icache_all
-#define __cpuc_flush_kern_all		cpu_cache.flush_kern_all
-#define __cpuc_flush_kern_louis		cpu_cache.flush_kern_louis
-#define __cpuc_flush_user_all		cpu_cache.flush_user_all
-#define __cpuc_flush_user_range		cpu_cache.flush_user_range
-#define __cpuc_coherent_kern_range	cpu_cache.coherent_kern_range
-#define __cpuc_coherent_user_range	cpu_cache.coherent_user_range
-#define __cpuc_flush_dcache_area	cpu_cache.flush_kern_dcache_area
+static inline void __nocfi __cpuc_flush_icache_all(void)
+{
+	cpu_cache.flush_icache_all();
+}
+static inline void __nocfi __cpuc_flush_kern_all(void)
+{
+	cpu_cache.flush_icache_all();
+}
+static inline void __nocfi __cpuc_flush_kern_louis(void)
+{
+	cpu_cache.flush_kern_louis();
+}
+static inline void __nocfi __cpuc_flush_user_all(void)
+{
+	cpu_cache.flush_user_all();
+}
+static inline void __nocfi __cpuc_flush_user_range(unsigned long start, unsigned long end, unsigned int flags)
+{
+	cpu_cache.flush_user_range(start, end, flags);
+}
+static inline void __nocfi __cpuc_coherent_kern_range(unsigned long start, unsigned long end)
+{
+	cpu_cache.coherent_kern_range(start, end);
+}
+static inline int __nocfi __cpuc_coherent_user_range(unsigned long start, unsigned long end)
+{
+	return cpu_cache.coherent_user_range(start, end);
+}
+static inline void __nocfi __cpuc_flush_dcache_area(void *kaddr, size_t sz)
+{
+	cpu_cache.flush_kern_dcache_area(kaddr, sz);
+}
 
 /*
  * These are private to the dma-mapping API.  Do not use directly.
@@ -137,7 +161,10 @@ extern struct cpu_cache_fns cpu_cache;
  * is visible to DMA, or data written by DMA to system memory is
  * visible to the CPU.
  */
-#define dmac_flush_range		cpu_cache.dma_flush_range
+static inline void __nocfi dmac_flush_range(const void *start, const void *end)
+{
+	cpu_cache.dma_flush_range(start, end);
+}
 
 #else
 
