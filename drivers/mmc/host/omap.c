@@ -659,7 +659,7 @@ mmc_omap_sg_to_buf(struct mmc_omap_host *host)
 
 	sg = host->data->sg + host->sg_idx;
 	host->buffer_bytes_left = sg->length;
-	host->buffer = sg_virt(sg);
+	host->buffer = kmap_local_page(sg_page(sg));
 	if (host->buffer_bytes_left > host->total_bytes_left)
 		host->buffer_bytes_left = host->total_bytes_left;
 }
@@ -691,6 +691,11 @@ mmc_omap_xfer_data(struct mmc_omap_host *host, int write)
 	nwords = DIV_ROUND_UP(n, 2);
 
 	host->buffer_bytes_left -= n;
+	if (host->buffer_bytes_left == 0) {
+		kunmap_local(host->buffer);
+		host->buffer = NULL;
+	}
+
 	host->total_bytes_left -= n;
 	host->data->bytes_xfered += n;
 
