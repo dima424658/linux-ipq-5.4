@@ -216,7 +216,7 @@ static irqreturn_t mmc_davinci_irq(int irq, void *dev_id);
 static void mmc_davinci_sg_to_buf(struct mmc_davinci_host *host)
 {
 	host->buffer_bytes_left = sg_dma_len(host->sg);
-	host->buffer = sg_virt(host->sg);
+	host->buffer = kmap_local_page(sg_page(host->sg));
 	if (host->buffer_bytes_left > host->bytes_left)
 		host->buffer_bytes_left = host->bytes_left;
 }
@@ -261,7 +261,13 @@ static void davinci_fifo_data_trans(struct mmc_davinci_host *host,
 			p = p + (n & 3);
 		}
 	}
-	host->buffer = p;
+
+	if (host->buffer_bytes_left == 0) {
+		kunmap_local(host->buffer);
+		host->buffer = NULL;
+	} else {
+		host->buffer = p;
+	}
 }
 
 static void mmc_davinci_start_command(struct mmc_davinci_host *host,
