@@ -115,7 +115,7 @@ static int mvsd_setup_data(struct mvsd_host *host, struct mmc_data *data)
 		 * boundary.
 		 */
 		host->pio_size = data->blocks * data->blksz;
-		host->pio_ptr = sg_virt(data->sg);
+		host->pio_ptr = kmap_local_page(sg_page(data->sg));
 		if (!nodma)
 			dev_dbg(host->dev, "fallback to PIO for data at 0x%p size %d\n",
 				host->pio_ptr, host->pio_size);
@@ -289,6 +289,7 @@ static u32 mvsd_finish_data(struct mvsd_host *host, struct mmc_data *data,
 	void __iomem *iobase = host->base;
 
 	if (host->pio_ptr) {
+		kunmap_local(host->pio_ptr);
 		host->pio_ptr = NULL;
 		host->pio_size = 0;
 	} else {
