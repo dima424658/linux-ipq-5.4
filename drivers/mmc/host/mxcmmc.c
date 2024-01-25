@@ -267,10 +267,14 @@ static inline void buffer_swap32(u32 *buf, int len)
 static void mxcmci_swap_buffers(struct mmc_data *data)
 {
 	struct scatterlist *sg;
+	u32 *buf;
 	int i;
 
-	for_each_sg(data->sg, sg, data->sg_len, i)
-		buffer_swap32(sg_virt(sg), sg->length);
+	for_each_sg(data->sg, sg, data->sg_len, i) {
+		buf = kmap_local_page(sg_page(sg));
+		buffer_swap32(buf, sg->length);
+		kunmap_local(buf);
+	}
 }
 #else
 static inline void mxcmci_swap_buffers(struct mmc_data *data) {}
@@ -526,10 +530,9 @@ static int mxcmci_poll_status(struct mxcmci_host *host, u32 mask)
 	} while (1);
 }
 
-static int mxcmci_pull(struct mxcmci_host *host, void *_buf, int bytes)
+static int mxcmci_pull(struct mxcmci_host *host, u32 *buf, int bytes)
 {
 	unsigned int stat;
-	u32 *buf = _buf;
 
 	while (bytes > 3) {
 		stat = mxcmci_poll_status(host,
@@ -555,10 +558,9 @@ static int mxcmci_pull(struct mxcmci_host *host, void *_buf, int bytes)
 	return 0;
 }
 
-static int mxcmci_push(struct mxcmci_host *host, void *_buf, int bytes)
+static int mxcmci_push(struct mxcmci_host *host, u32 *buf, int bytes)
 {
 	unsigned int stat;
-	u32 *buf = _buf;
 
 	while (bytes > 3) {
 		stat = mxcmci_poll_status(host, STATUS_BUF_WRITE_RDY);
@@ -588,20 +590,25 @@ static int mxcmci_transfer_data(struct mxcmci_host *host)
 	struct mmc_data *data = host->req->data;
 	struct scatterlist *sg;
 	int stat, i;
+	u32 *buf;
 
 	host->data = data;
 	host->datasize = 0;
 
 	if (data->flags & MMC_DATA_READ) {
 		for_each_sg(data->sg, sg, data->sg_len, i) {
-			stat = mxcmci_pull(host, sg_virt(sg), sg->length);
+			buf = kmap_local_page(sg_page(sg));
+			stat = mxcmci_pull(host, buf, sg->length);
+			kunmap_local(buf);
 			if (stat)
 				return stat;
 			host->datasize += sg->length;
 		}
 	} else {
 		for_each_sg(data->sg, sg, data->sg_len, i) {
-			stat = mxcmci_push(host, sg_virt(sg), sg->length);
+			buf = kmap_local_page(sg_page(sg));
+			stat = mxcmci_push(host, buf, sg->length);
+			kunmap_local(buf);
 			if (stat)
 				return stat;
 			host->datasize += sg->length;
