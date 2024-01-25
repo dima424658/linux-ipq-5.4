@@ -314,8 +314,9 @@ static void esdhc_mcf_request_done(struct sdhci_host *host,
 	 * transfer endiannes. A swap after the transfer is needed.
 	 */
 	for_each_sg(mrq->data->sg, sg, mrq->data->sg_len, i) {
-		buffer = (u32 *)sg_virt(sg);
+		buffer = kmap_local_page(sg_page(sg));
 		esdhc_mcf_buffer_swap32(buffer, sg->length);
+		kunmap_local(buffer);
 	}
 
 exit_done:
