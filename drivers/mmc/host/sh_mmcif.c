@@ -611,13 +611,27 @@ static bool sh_mmcif_next_block(struct sh_mmcif_host *host, u32 *p)
 
 	if (host->sg_blkidx == data->sg->length) {
 		host->sg_blkidx = 0;
+		/* Unmap previous sg and map the next one */
+		if (host->pio_ptr) {
+			kunmap_local(host->pio_ptr);
+			host->pio_ptr = NULL;
+		}
 		if (++host->sg_idx < data->sg_len)
-			host->pio_ptr = sg_virt(++data->sg);
+			host->pio_ptr = kmap_local_page(sg_page(++data->sg));
 	} else {
 		host->pio_ptr = p;
 	}
 
-	return host->sg_idx != data->sg_len;
+	/*
+	 * We return true of there are more blocks, and false if there is no
+	 * next block.
+	 */
+	if (host->sg_idx != data->sg_len)
+		return true;
+	/* Unmap the last buffer if any */
+	if (host->pio_ptr)
+		kunmap_local(host->pio_ptr);
+	return false;
 }
 
 static void sh_mmcif_single_read(struct sh_mmcif_host *host,
@@ -669,7 +683,7 @@ static void sh_mmcif_multi_read(struct sh_mmcif_host *host,
 	host->wait_for = MMCIF_WAIT_FOR_MREAD;
 	host->sg_idx = 0;
 	host->sg_blkidx = 0;
-	host->pio_ptr = sg_virt(data->sg);
+	host->pio_ptr = kmap_local_page(sg_page(data->sg));
 
 	sh_mmcif_bitset(host, MMCIF_CE_INT_MASK, MASK_MBUFREN);
 }
@@ -749,7 +763,7 @@ static void sh_mmcif_multi_write(struct sh_mmcif_host *host,
 	host->wait_for = MMCIF_WAIT_FOR_MWRITE;
 	host->sg_idx = 0;
 	host->sg_blkidx = 0;
-	host->pio_ptr = sg_virt(data->sg);
+	host->pio_ptr = kmap_local_page(sg_page(data->sg));
 
 	sh_mmcif_bitset(host, MMCIF_CE_INT_MASK, MASK_MBUFWEN);
 }
