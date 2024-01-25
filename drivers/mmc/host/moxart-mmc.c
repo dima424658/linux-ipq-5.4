@@ -310,7 +310,7 @@ static void moxart_transfer_pio(struct moxart_host *host)
 	if (host->data_len == data->bytes_xfered)
 		return;
 
-	sgp = sg_virt(host->cur_sg);
+	sgp = kmap_local_page(sg_page(host->cur_sg));
 	remain = host->data_remain;
 
 	if (data->flags & MMC_DATA_WRITE) {
@@ -346,6 +346,7 @@ static void moxart_transfer_pio(struct moxart_host *host)
 		}
 	}
 
+	kunmap_local(sgp);
 	data->bytes_xfered += host->data_remain - remain;
 	host->data_remain = remain;
 
