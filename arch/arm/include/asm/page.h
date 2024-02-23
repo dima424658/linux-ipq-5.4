@@ -138,17 +138,39 @@ void xscale_mc_clear_user_highpage(struct page *page, unsigned long vaddr);
 #ifdef MULTI_USER
 extern struct cpu_user_fns cpu_user;
 
-#define __cpu_clear_user_highpage	cpu_user.cpu_clear_user_highpage
-#define __cpu_copy_user_highpage	cpu_user.cpu_copy_user_highpage
+static inline void __nocfi __cpu_clear_user_highpage(struct page *page,
+						     unsigned long vaddr)
+{
+	cpu_user.cpu_clear_user_highpage(page, vaddr);
+}
+
+static inline void __nocfi __cpu_copy_user_highpage(struct page *to,
+			struct page *from, unsigned long vaddr,
+			struct vm_area_struct *vma)
+{
+	cpu_user.cpu_copy_user_highpage(to, from, vaddr, vma);
+}
 
 #else
 
-#define __cpu_clear_user_highpage	__glue(_USER,_clear_user_highpage)
-#define __cpu_copy_user_highpage	__glue(_USER,_copy_user_highpage)
+/* These turn into function declarations for each per-CPU glue function */
+void __glue(_USER,_clear_user_highpage)(struct page *page, unsigned long vaddr);
+void __glue(_USER,_copy_user_highpage)(struct page *to, struct page *from,
+		unsigned long vaddr, struct vm_area_struct *vma);
 
-extern void __cpu_clear_user_highpage(struct page *page, unsigned long vaddr);
-extern void __cpu_copy_user_highpage(struct page *to, struct page *from,
-			unsigned long vaddr, struct vm_area_struct *vma);
+static inline void __nocfi __cpu_clear_user_highpage(struct page *page,
+						     unsigned long vaddr)
+{
+	__glue(_USER,_clear_user_highpage)(page, vaddr);
+}
+
+static inline void __nocfi __cpu_copy_user_highpage(struct page *to,
+			struct page *from, unsigned long vaddr,
+			struct vm_area_struct *vma)
+{
+	__glue(_USER,_copy_user_highpage)(to, from, vaddr, vma);
+}
+
 #endif
 
 #define clear_user_highpage(page,vaddr)		\

@@ -31,13 +31,8 @@ EXPORT_SYMBOL(__cpuc_flush_dcache_area);
 EXPORT_SYMBOL(cpu_cache);
 #endif
 
-#ifdef CONFIG_MMU
-#ifndef MULTI_USER
-EXPORT_SYMBOL(__cpu_clear_user_highpage);
-EXPORT_SYMBOL(__cpu_copy_user_highpage);
-#else
+#if defined(CONFIG_MMU) && defined(MULTI_USER)
 EXPORT_SYMBOL(cpu_user);
-#endif
 #endif
 
 /*
