@@ -932,6 +932,16 @@ static int hw_breakpoint_pending(unsigned long addr, unsigned int fsr,
 	case ARM_ENTRY_SYNC_WATCHPOINT:
 		watchpoint_handler(addr, fsr, regs);
 		break;
+	case ARM_ENTRY_CFI_BREAKPOINT:
+		if (IS_ENABLED(CONFIG_CFI_PERMISSIVE)) {
+			pr_err("Permissive CFI breakpoint\n");
+			dump_stack();
+			/* Skip the breaking instruction */
+			instruction_pointer(regs) += 4;
+		} else {
+			die("Oops - CFI", regs, 0);
+		}
+		break;
 	default:
 		ret = 1; /* Unhandled fault. */
 	}
