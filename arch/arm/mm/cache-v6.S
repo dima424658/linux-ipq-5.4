@@ -116,9 +116,7 @@ SYM_FUNC_END(v6_flush_user_cache_range)
  *	It is assumed that:
  *	- the Icache does not read data from the write buffer
  */
-SYM_TYPED_FUNC_START(v6_coherent_kern_range)
-	b	v6_coherent_user_range
-SYM_FUNC_END(v6_coherent_kern_range)
+SYM_FUNC_ALIAS(v6_coherent_kern_range, v6_coherent_user_range)
 
 /*
  *	v6_coherent_user_range(start,end)
