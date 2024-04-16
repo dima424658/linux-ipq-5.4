@@ -157,9 +157,7 @@ SYM_FUNC_END(xsc3_flush_icache_all)
  *	Invalidate all cache entries in a particular address
  *	space.
  */
-SYM_TYPED_FUNC_START(xsc3_flush_user_cache_all)
-	b	xsc3_flush_kern_cache_all
-SYM_FUNC_END(xsc3_flush_user_cache_all)
+SYM_FUNC_ALIAS(xsc3_flush_user_cache_all, xsc3_flush_kern_cache_all)
 
 /*
  *	flush_kern_cache_all()
@@ -221,9 +219,7 @@ SYM_FUNC_END(xsc3_flush_user_cache_range)
  *	Note: single I-cache line invalidation isn't used here since
  *	it also trashes the mini I-cache used by JTAG debuggers.
  */
-SYM_TYPED_FUNC_START(xsc3_coherent_kern_range)
-	b	xsc3_coherent_user_range
-SYM_FUNC_END(xsc3_coherent_kern_range)
+SYM_FUNC_ALIAS(xsc3_coherent_kern_range, xsc3_coherent_user_range)
 
 SYM_TYPED_FUNC_START(xsc3_coherent_user_range)
 	bic	r0, r0, #CACHELINESIZE - 1

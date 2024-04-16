@@ -127,9 +127,7 @@ SYM_FUNC_END(arm1020e_flush_icache_all)
  *	Invalidate all cache entries in a particular address
  *	space.
  */
-SYM_TYPED_FUNC_START(arm1020e_flush_user_cache_all)
-	b	arm1020e_flush_kern_cache_all
-SYM_FUNC_END(arm1020e_flush_user_cache_all)
+SYM_FUNC_ALIAS(arm1020e_flush_user_cache_all, arm1020e_flush_kern_cache_all)
 
 /*
  *	flush_kern_cache_all()
@@ -198,9 +196,7 @@ SYM_FUNC_END(arm1020e_flush_user_cache_range)
  *	- start	- virtual start address
  *	- end	- virtual end address
  */
-SYM_TYPED_FUNC_START(arm1020e_coherent_kern_range)
-	b	arm1020e_coherent_user_range
-SYM_FUNC_END(arm1020e_coherent_kern_range)
+SYM_FUNC_ALIAS(arm1020e_coherent_kern_range, arm1020e_coherent_user_range)
 
 /*
  *	coherent_user_range(start, end)
