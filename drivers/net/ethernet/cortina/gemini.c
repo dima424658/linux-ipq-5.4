@@ -2138,6 +2138,28 @@ static void gmac_get_pauseparam(struct net_device *netdev,
 	pparam->autoneg = true;
 }
 
+static int gmac_set_pauseparam(struct net_device *netdev,
+				struct ethtool_pauseparam *pparam)
+{
+	struct gemini_ethernet_port *port = netdev_priv(netdev);
+	union gmac_config0 config0;
+
+	config0.bits32 = readl(port->gmac_base + GMAC_CONFIG0);
+
+	if (pparam->rx_pause)
+		config0.bits.rx_fc_en = 1;
+	if (pparam->tx_pause)
+		config0.bits.tx_fc_en = 1;
+	/* We only support autonegotiation */
+	if (!pparam->autoneg)
+		return -EINVAL;
+
+	writel(config0.bits32, port->gmac_base + GMAC_CONFIG0);
+
+	return 0;
+}
+
+
 static void gmac_get_ringparam(struct net_device *netdev,
 			       struct ethtool_ringparam *rp,
 			       struct kernel_ethtool_ringparam *kernel_rp,
@@ -2258,6 +2280,7 @@ static const struct ethtool_ops gmac_351x_ethtool_ops = {
 	.set_link_ksettings = gmac_set_ksettings,
 	.nway_reset	= gmac_nway_reset,
 	.get_pauseparam	= gmac_get_pauseparam,
+	.set_pauseparam = gmac_set_pauseparam,
 	.get_ringparam	= gmac_get_ringparam,
 	.set_ringparam	= gmac_set_ringparam,
 	.get_coalesce	= gmac_get_coalesce,
