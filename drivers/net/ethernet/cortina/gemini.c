@@ -1148,12 +1148,20 @@ static int gmac_map_tx_bufs(struct net_device *netdev, struct sk_buff *skb,
 	struct gmac_txdesc *txd;
 	skb_frag_t *skb_frag;
 	dma_addr_t mapping;
+	bool tcp = false;
 	void *buffer;
 	u16 mss;
 	int ret;
 
 	word1 = skb->len;
 	word3 = SOF_BIT;
+
+	/* Determine if we are doing TCP */
+	if (skb->protocol == htons(ETH_P_IP))
+		tcp = (ip_hdr(skb)->protocol == IPPROTO_TCP);
+	else
+		/* IPv6 */
+		tcp = (ipv6_hdr(skb)->nexthdr == IPPROTO_TCP);
 
 	mss = skb_shinfo(skb)->gso_size;
 	if (mss) {
@@ -1165,6 +1173,20 @@ static int gmac_map_tx_bufs(struct net_device *netdev, struct sk_buff *skb,
 		mss += skb_tcp_all_headers(skb);
 		netdev_dbg(netdev, "segment offloading mss = %04x len=%04x\n",
 			   mss, skb->len);
+		word1 |= TSS_MTU_ENABLE_BIT;
+		word3 |= mss;
+	} else if (tcp) {
+		/* Even if we are not using TSO, use the segment offloader
+		 * for transferring the TCP frame: the TSO engine will deal
+		 * with chopping up frames that exceed ETH_DATA_LEN which
+		 * the checksumming engine cannot handle (see below) into
+		 * manageable chunks. It flawlessly deals with quite big
+		 * frames and frames containing custom DSA EtherTypes.
+		 */
+		mss = netdev->mtu + skb_tcp_all_headers(skb);
+		mss = min(mss, skb->len);
+		netdev_dbg(netdev, "botched TSO len %04x mtu %04x mss %04x\n",
+			   skb->len, netdev->mtu, mss);
 		word1 |= TSS_MTU_ENABLE_BIT;
 		word3 |= mss;
 	} else if (skb->len >= ETH_FRAME_LEN) {
@@ -1185,21 +1207,16 @@ static int gmac_map_tx_bufs(struct net_device *netdev, struct sk_buff *skb,
 	}
 
 	if (skb->ip_summed == CHECKSUM_PARTIAL) {
-		int tcp = 0;
-
 		/* We do not switch off the checksumming on non TCP/UDP
 		 * frames: as is shown from tests, the checksumming engine
 		 * is smart enough to see that a frame is not actually TCP
 		 * or UDP and then just pass it through without any changes
 		 * to the frame.
 		 */
-		if (skb->protocol == htons(ETH_P_IP)) {
+		if (skb->protocol == htons(ETH_P_IP))
 			word1 |= TSS_IP_CHKSUM_BIT;
-			tcp = ip_hdr(skb)->protocol == IPPROTO_TCP;
-		} else { /* IPv6 */
+		else
 			word1 |= TSS_IPV6_ENABLE_BIT;
-			tcp = ipv6_hdr(skb)->nexthdr == IPPROTO_TCP;
-		}
 
 		word1 |= tcp ? TSS_TCP_CHKSUM_BIT : TSS_UDP_CHKSUM_BIT;
 	}
