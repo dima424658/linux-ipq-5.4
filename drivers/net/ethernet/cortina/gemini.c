@@ -1252,6 +1252,9 @@ static netdev_tx_t gmac_start_xmit(struct sk_buff *skb,
 	if (skb->len >= 0x10000)
 		goto out_drop_free;
 
+	// 500 works
+	// udelay(500);
+
 	txq_num = skb_get_queue_mapping(skb);
 	ptr_reg = port->dma_base + GMAC_SW_TX_QUEUE_PTR_REG(txq_num);
 	txq = &port->txq[txq_num];
