@@ -17,6 +17,10 @@ struct qce_cipher_ctx {
 	struct crypto_sync_skcipher *fallback;
 };
 
+struct qce_config_key_sec {
+	uint32_t keylen;
+}__attribute__((packed));
+
 /**
  * struct qce_cipher_reqctx - holds private cipher objects per request
  * @flags: operation flags
@@ -45,12 +49,12 @@ struct qce_cipher_reqctx {
 	unsigned int cryptlen;
 };
 
-static inline struct qce_alg_template *to_cipher_tmpl(struct crypto_tfm *tfm)
+static inline struct qce_alg_template *to_cipher_tmpl(struct crypto_skcipher *tfm)
 {
-	struct crypto_alg *alg = tfm->__crt_alg;
-	return container_of(alg, struct qce_alg_template, alg.crypto);
+	struct skcipher_alg *alg = crypto_skcipher_alg(tfm);
+	return container_of(alg, struct qce_alg_template, alg.skcipher);
 }
 
-extern const struct qce_algo_ops ablkcipher_ops;
+extern const struct qce_algo_ops skcipher_ops;
 
 #endif /* _CIPHER_H_ */

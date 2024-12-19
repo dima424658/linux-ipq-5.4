@@ -8,11 +8,14 @@ on the Qualcomm Hexagon core.
 	Value type: <string>
 	Definition: must be one of:
 		    "qcom,q6v5-pil",
+		    "qcom,ipq6018-wcss-pil"
 		    "qcom,ipq8074-wcss-pil"
+		    "qcom,ipq9048-wcss-pil"
 		    "qcom,msm8916-mss-pil",
 		    "qcom,msm8974-mss-pil"
 		    "qcom,msm8996-mss-pil"
 		    "qcom,sdm845-mss-pil"
+		    "qcom,qcs5018-wcss-pil"
 
 - reg:
 	Usage: required

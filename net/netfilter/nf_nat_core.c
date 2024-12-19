@@ -24,6 +24,7 @@
 #include <net/netfilter/nf_nat.h>
 #include <net/netfilter/nf_nat_helper.h>
 #include <uapi/linux/netfilter/nf_nat.h>
+#include <linux/netfilter_bridge.h>
 
 #include "nf_internals.h"
 
@@ -604,10 +605,6 @@ nf_nat_setup_info(struct nf_conn *ct,
 	struct net *net = nf_ct_net(ct);
 	struct nf_conntrack_tuple curr_tuple, new_tuple;
 
-	/* Can't setup nat info for confirmed ct. */
-	if (nf_ct_is_confirmed(ct))
-		return NF_ACCEPT;
-
 	WARN_ON(maniptype != NF_NAT_MANIP_SRC &&
 		maniptype != NF_NAT_MANIP_DST);
 
@@ -623,6 +620,13 @@ nf_nat_setup_info(struct nf_conn *ct,
 			   &ct->tuplehash[IP_CT_DIR_REPLY].tuple);
 
 	get_unique_tuple(&new_tuple, &curr_tuple, range, ct, maniptype);
+
+#if IS_ENABLED(CONFIG_NF_NAT_TRY_NEXT_RULE)
+	if (curr_tuple.src.u.all != 0 && curr_tuple.dst.u.all != 0 &&
+		new_tuple.src.u.all != 0 && new_tuple.dst.u.all != 0 &&
+		nf_nat_used_tuple(&new_tuple, ct))
+		return XT_CONTINUE;
+#endif
 
 	if (!nf_ct_tuple_equal(&new_tuple, &curr_tuple)) {
 		struct nf_conntrack_tuple reply;
@@ -650,16 +654,19 @@ nf_nat_setup_info(struct nf_conn *ct,
 				      &ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
 		lock = &nf_nat_locks[srchash % CONNTRACK_LOCKS];
 		spin_lock_bh(lock);
-		hlist_add_head_rcu(&ct->nat_bysource,
-				   &nf_nat_bysource[srchash]);
+		/* The ct could be already in nf_nat_bysource in some race condition cases.*/
+		if(!(ct->status & IPS_SRC_NAT_DONE)){
+			hlist_add_head_rcu(&ct->nat_bysource,
+				 &nf_nat_bysource[srchash]);
+			ct->status |= IPS_SRC_NAT_DONE;
+		}
+
 		spin_unlock_bh(lock);
 	}
 
 	/* It's done. */
 	if (maniptype == NF_NAT_MANIP_DST)
 		ct->status |= IPS_DST_NAT_DONE;
-	else
-		ct->status |= IPS_SRC_NAT_DONE;
 
 	return NF_ACCEPT;
 }
@@ -745,6 +752,30 @@ nf_nat_inet_fn(void *priv, struct sk_buff *skb,
 	case IP_CT_RELATED_REPLY:
 		/* Only ICMPs can be IP_CT_IS_REPLY.  Fallthrough */
 	case IP_CT_NEW:
+#if IS_ENABLED(CONFIG_BRIDGE_NETFILTER)
+		/* when skb is forwarding between ports of a bridge,the
+		 * nf_bridge will be set and nf_bridge->physoutdev is not null,
+		 * We can assume that it is not expecting NAT operation.
+		 * when BR_HOOK is enabled, multicast packets will reach
+		 * postrouting twice,the first time is when it is forwarded
+		 * between ports of a bridge, the second time is that it is
+		 * forwarded to upstream port.
+		 *
+		 * It will perform traversing of the NAT table at the first
+		 * time, the next time, it will use the result of first time.
+		 * since forwarding betweeng ports of a bridge, it won't hit
+		 * rules of SNAT, it cause NO NAT operation on this skb when
+		 * forwarding to the upstream port.
+		 * To avoid the scenario above, accept it when it is forwarding
+		 * between ports of a bridge for multicast.
+		 */
+		if (skb->pkt_type == PACKET_MULTICAST) {
+			struct nf_bridge_info *nf_bridge =
+				nf_bridge_info_get(skb);
+			if (nf_bridge && nf_bridge->physoutdev)
+				return NF_ACCEPT;
+		}
+#endif
 		/* Seen it before?  This can happen for loopback, retrans,
 		 * or local packets.
 		 */

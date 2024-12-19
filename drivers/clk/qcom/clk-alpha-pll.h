@@ -14,6 +14,11 @@ enum {
 	CLK_ALPHA_PLL_TYPE_BRAMMO,
 	CLK_ALPHA_PLL_TYPE_FABIA,
 	CLK_ALPHA_PLL_TYPE_TRION,
+	CLK_ALPHA_PLL_TYPE_APSS,
+	CLK_ALPHA_PLL_TYPE_STROMER,
+	CLK_ALPHA_PLL_TYPE_NSS_HUAYRA,
+	CLK_ALPHA_GCC_PLL_TYPE_STROMER_PLUS,
+	CLK_ALPHA_PLL_TYPE_DEFAULT_EVO,
 	CLK_ALPHA_PLL_TYPE_MAX,
 };
 
@@ -61,6 +66,8 @@ struct clk_alpha_pll {
 #define SUPPORTS_OFFLINE_REQ	BIT(0)
 #define SUPPORTS_FSM_MODE	BIT(2)
 #define SUPPORTS_DYNAMIC_UPDATE	BIT(3)
+
+
 	u8 flags;
 
 	struct clk_regmap clkr;
@@ -106,6 +113,11 @@ struct alpha_pll_config {
 	u32 post_div_mask;
 	u32 vco_val;
 	u32 vco_mask;
+	u32 test_ctl_val;
+	u32 test_ctl_hi_val;
+	u32 status_reg_val;
+	u32 status_reg_mask;
+	u32 lock_det;
 };
 
 extern const struct clk_ops clk_alpha_pll_ops;
@@ -113,8 +125,11 @@ extern const struct clk_ops clk_alpha_pll_hwfsm_ops;
 extern const struct clk_ops clk_alpha_pll_postdiv_ops;
 extern const struct clk_ops clk_alpha_pll_huayra_ops;
 extern const struct clk_ops clk_alpha_pll_postdiv_ro_ops;
+extern const struct clk_ops clk_alpha_pll_stromer_ops;
+extern const struct clk_ops clk_alpha_pll_stromer_plus_ops;
 
 extern const struct clk_ops clk_alpha_pll_fabia_ops;
+extern const struct clk_ops clk_alpha_pll_brammo_ops;
 extern const struct clk_ops clk_alpha_pll_fixed_fabia_ops;
 extern const struct clk_ops clk_alpha_pll_postdiv_fabia_ops;
 

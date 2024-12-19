@@ -12,7 +12,13 @@
 #include <linux/platform_device.h>
 #include <linux/watchdog.h>
 #include <linux/of_device.h>
+#include <linux/sched/clock.h>
+#include <linux/qcom_scm.h>
+#include <linux/mhi.h>
 
+#define TCSR_WONCE_REG 0x193d010
+
+bool mhi_wdt_panic_enable;
 enum wdt_reg {
 	WDT_RST,
 	WDT_EN,
@@ -39,6 +45,21 @@ static const u32 reg_offset_data_kpss[] = {
 	[WDT_BITE_TIME] = 0x14,
 };
 
+struct qti_wdt_props {
+	const u32 *layout;
+	u32 max_tick_count;
+};
+
+const struct qti_wdt_props qti_wdt_props_apcs_tmr = {
+	.layout = reg_offset_data_apcs_tmr,
+	.max_tick_count = 0x10000000U,
+};
+
+const struct qti_wdt_props qti_wdt_props_kpss = {
+	.layout = reg_offset_data_kpss,
+	.max_tick_count = 0xFFFFFU,
+};
+
 struct qcom_wdt {
 	struct watchdog_device	wdd;
 	unsigned long		rate;
@@ -57,11 +78,50 @@ struct qcom_wdt *to_qcom_wdt(struct watchdog_device *wdd)
 	return container_of(wdd, struct qcom_wdt, wdd);
 }
 
+static inline int qcom_get_enable(struct watchdog_device *wdd)
+{
+	return QCOM_WDT_ENABLE;
+}
+
+static void qcom_wdt_bite(struct qcom_wdt *wdt, unsigned int ticks)
+{
+	unsigned long nanosec_rem;
+	unsigned long long t = sched_clock();
+
+	nanosec_rem = do_div(t, 1000000000);
+	pr_info("Watchdog bark! Now = %lu.%06lu\n", (unsigned long) t,
+							nanosec_rem / 1000);
+
+#ifdef CONFIG_MHI_BUS
+	if (mhi_wdt_panic_enable)
+		mhi_wdt_panic_handler();
+#endif
+
+	pr_info("Causing a watchdog bite!");
+	writel(0, wdt_addr(wdt, WDT_EN));
+	writel(1, wdt_addr(wdt, WDT_RST));
+	mb(); /* Avoid unpredictable behaviour in concurrent executions */
+	pr_info("Configuring Watchdog Timer\n");
+	writel(ticks, wdt_addr(wdt, WDT_BARK_TIME));
+	writel(ticks, wdt_addr(wdt, WDT_BITE_TIME));
+	writel(QCOM_WDT_ENABLE, wdt_addr(wdt, WDT_EN));
+	mb(); /* Make sure the above sequence hits hardware before Reboot. */
+	pr_info("Waiting for Reboot\n");
+
+	/*
+	 * Actually make sure the above sequence hits hardware before sleeping.
+	 */
+	wmb();
+
+	mdelay(150);
+}
+
 static irqreturn_t qcom_wdt_isr(int irq, void *arg)
 {
 	struct watchdog_device *wdd = arg;
 
 	watchdog_notify_pretimeout(wdd);
+	qcom_wdt_bite(to_qcom_wdt(wdd), 1);
 
 	return IRQ_HANDLED;
 }
@@ -73,9 +133,35 @@ static int qcom_wdt_start(struct watchdog_device *wdd)
 
 	writel(0, wdt_addr(wdt, WDT_EN));
 	writel(1, wdt_addr(wdt, WDT_RST));
-	writel(bark * wdt->rate, wdt_addr(wdt, WDT_BARK_TIME));
-	writel(wdd->timeout * wdt->rate, wdt_addr(wdt, WDT_BITE_TIME));
-	writel(QCOM_WDT_ENABLE, wdt_addr(wdt, WDT_EN));
+
+	/*
+	 * mhi-wdt-panic-enable if set, BARK and BITE time should have
+	 * enough difference for the MDM to collect crash dump and
+	 * reboot i.e BITE time should be set twice as BARK time.
+	 *
+	 * Openwrt sets the BITE and BARK time to be 30 and 29. In order
+	 * to have time for MDM dump collection, the following command must
+	 * be used to set BARK and BITE time to 15 and 30.
+	 *
+	 *	ubus call system watchdog '{ "timeout":15 }'
+	 *
+	 * The max timeout value that can be configured is only 32 and so
+	 * the above command must be run to give sufficient time difference
+	 * between bark and bite. Failing to run above command will lead to
+	 * timeout round off as a result of which bite time will be less than
+	 * bark time.
+	 *
+	 */
+	if (!mhi_wdt_panic_enable) {
+		writel(bark * wdt->rate, wdt_addr(wdt, WDT_BARK_TIME));
+		writel(wdd->timeout * wdt->rate, wdt_addr(wdt, WDT_BITE_TIME));
+	} else {
+		writel(wdd->timeout * wdt->rate, wdt_addr(wdt, WDT_BARK_TIME));
+		writel((wdd->timeout * wdt->rate) * 2, wdt_addr(wdt, WDT_BITE_TIME));
+	}
+	udelay(100);
+
+	writel(qcom_get_enable(wdd), wdt_addr(wdt, WDT_EN));
 	return 0;
 }
 
@@ -120,19 +206,8 @@ static int qcom_wdt_restart(struct watchdog_device *wdd, unsigned long action,
 	 *    Setup BITE_TIME to be 128ms, and enable WDT.
 	 */
 	timeout = 128 * wdt->rate / 1000;
+	qcom_wdt_bite(wdt, timeout);
 
-	writel(0, wdt_addr(wdt, WDT_EN));
-	writel(1, wdt_addr(wdt, WDT_RST));
-	writel(timeout, wdt_addr(wdt, WDT_BARK_TIME));
-	writel(timeout, wdt_addr(wdt, WDT_BITE_TIME));
-	writel(QCOM_WDT_ENABLE, wdt_addr(wdt, WDT_EN));
-
-	/*
-	 * Actually make sure the above sequence hits hardware before sleeping.
-	 */
-	wmb();
-
-	mdelay(150);
 	return 0;
 }
 
@@ -168,6 +243,17 @@ static void qcom_clk_disable_unprepare(void *data)
 	clk_disable_unprepare(data);
 }
 
+static int qti_fiq_extwdt(unsigned int regaddr, unsigned int value)
+{
+	int ret;
+
+	ret = qti_scm_extwdt(SCM_SVC_EXTWDT, SCM_CMD_EXTWDT, regaddr, value);
+	if (ret)
+		pr_err("Setting value to TCSR_WONCE register failed\n");
+
+	return ret;
+}
+
 static int qcom_wdt_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -178,12 +264,17 @@ static int qcom_wdt_probe(struct platform_device *pdev)
 	u32 percpu_offset;
 	int irq, ret;
 	struct clk *clk;
+	unsigned int retn, extwdt_val = 0, regaddr;
+	u32 val;
+	const struct qti_wdt_props *wdt_dev_props;
 
-	regs = of_device_get_match_data(dev);
-	if (!regs) {
+	wdt_dev_props = of_device_get_match_data(dev);
+	if (!wdt_dev_props) {
 		dev_err(dev, "Unsupported QCOM WDT module\n");
 		return -ENODEV;
 	}
+
+	regs = wdt_dev_props->layout;
 
 	wdt = devm_kzalloc(dev, sizeof(*wdt), GFP_KERNEL);
 	if (!wdt)
@@ -199,6 +290,8 @@ static int qcom_wdt_probe(struct platform_device *pdev)
 
 	res->start += percpu_offset;
 	res->end += percpu_offset;
+
+	mhi_wdt_panic_enable = of_property_read_bool(np, "mhi-wdt-panic-enable");
 
 	wdt->base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(wdt->base))
@@ -229,7 +322,7 @@ static int qcom_wdt_probe(struct platform_device *pdev)
 	 */
 	wdt->rate = clk_get_rate(clk);
 	if (wdt->rate == 0 ||
-	    wdt->rate > 0x10000000U) {
+	    wdt->rate > wdt_dev_props->max_tick_count) {
 		dev_err(dev, "invalid clock rate\n");
 		return -EINVAL;
 	}
@@ -254,7 +347,8 @@ static int qcom_wdt_probe(struct platform_device *pdev)
 
 	wdt->wdd.ops = &qcom_wdt_ops;
 	wdt->wdd.min_timeout = 1;
-	wdt->wdd.max_timeout = 0x10000000U / wdt->rate;
+	wdt->wdd.max_timeout = wdt_dev_props->max_tick_count / wdt->rate;
+
 	wdt->wdd.parent = dev;
 	wdt->layout = regs;
 
@@ -262,11 +356,10 @@ static int qcom_wdt_probe(struct platform_device *pdev)
 		wdt->wdd.bootstatus = WDIOF_CARDRESET;
 
 	/*
-	 * If 'timeout-sec' unspecified in devicetree, assume a 30 second
-	 * default, unless the max timeout is less than 30 seconds, then use
-	 * the max instead.
+	 * Default to 32 seconds timeout, unless the max timeout
+	 * is less than 32 seconds, then use the max instead.
 	 */
-	wdt->wdd.timeout = min(wdt->wdd.max_timeout, 30U);
+	wdt->wdd.timeout = min(wdt->wdd.max_timeout, 32U);
 	watchdog_init_timeout(&wdt->wdd, 0, dev);
 
 	ret = devm_watchdog_register_device(dev, &wdt->wdd);
@@ -274,6 +367,16 @@ static int qcom_wdt_probe(struct platform_device *pdev)
 		return ret;
 
 	platform_set_drvdata(pdev, wdt);
+
+	if (!of_property_read_u32(np, "extwdt-val", &val)) {
+		extwdt_val = val;
+
+		regaddr = TCSR_WONCE_REG;
+		retn = qti_fiq_extwdt(regaddr, extwdt_val);
+		if (retn)
+			dev_err(&pdev->dev, "FIQ scm_call failed\n");
+	}
+
 	return 0;
 }
 
@@ -300,9 +403,12 @@ static int __maybe_unused qcom_wdt_resume(struct device *dev)
 static SIMPLE_DEV_PM_OPS(qcom_wdt_pm_ops, qcom_wdt_suspend, qcom_wdt_resume);
 
 static const struct of_device_id qcom_wdt_of_table[] = {
-	{ .compatible = "qcom,kpss-timer", .data = reg_offset_data_apcs_tmr },
-	{ .compatible = "qcom,scss-timer", .data = reg_offset_data_apcs_tmr },
-	{ .compatible = "qcom,kpss-wdt", .data = reg_offset_data_kpss },
+	{ .compatible = "qcom,kpss-timer",
+	  .data = (void *) &qti_wdt_props_apcs_tmr },
+	{ .compatible = "qcom,scss-timer",
+	  .data = (void *) &qti_wdt_props_apcs_tmr },
+	{ .compatible = "qcom,kpss-wdt",
+	  .data = (void *) &qti_wdt_props_kpss },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, qcom_wdt_of_table);

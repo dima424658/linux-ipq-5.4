@@ -88,6 +88,25 @@ config RING_BUFFER_ALLOW_SWAP
 	 Allow the use of ring_buffer_swap_cpu.
 	 Adds a very slight overhead to tracing when enabled.
 
+config IPC_LOGGING
+	bool "Debug Logging for IPC Drivers"
+	select GENERIC_TRACER
+	help
+	  IPC Logging driver provides a logging option for IPC Drivers.
+	  This provides a cyclic buffer based logging support in a driver
+	  specific context. This driver also provides a debugfs interface
+	  to dump the logs in a live fashion.
+
+	  If in doubt, say no.
+
+config IPC_LOG_MINIDUMP_BUFFERS
+        int "Ipc log buffers count that can be dumped with minidump"
+	depends on IPC_LOGGING
+        default 0
+        help
+          This option is used to configure maximum number of ipc log
+          buffers that can be dumped by minidump.
+
 config PREEMPTIRQ_TRACEPOINTS
 	bool
 	depends on TRACE_PREEMPT_TOGGLE || TRACE_IRQFLAGS
@@ -796,6 +815,19 @@ config GCOV_PROFILE_FTRACE
 
 	  Note that on a kernel compiled with this config, ftrace will
 	  run significantly slower.
+
+config SRD_TRACE
+	bool "Record trace events in coherent memory"
+	depends on FTRACE
+	default n
+	help
+	  Normal tracing records the information in cacheable memory. In some
+	  scenarios where the system reboots unexpectedly, the cache is not
+	  flushed and the recorded information is lost. While doing the core
+	  dump analysis, the developer doesn't have the details about the
+	  functions that executed during the final moments before the reboot.
+	  With this option the information is recorded to coherent memory and
+	  the information is not lost even during an unexpected reboot.
 
 endif # FTRACE
 

@@ -832,7 +832,7 @@ void neigh_destroy(struct neighbour *neigh)
 	NEIGH_CACHE_STAT_INC(neigh->tbl, destroys);
 
 	if (!neigh->dead) {
-		pr_warn("Destroying alive neighbour %p\n", neigh);
+		pr_warn("Destroying alive neighbour %pK\n", neigh);
 		dump_stack();
 		return;
 	}
@@ -1204,7 +1204,19 @@ static void neigh_update_hhs(struct neighbour *neigh)
 	}
 }
 
+ATOMIC_NOTIFIER_HEAD(neigh_mac_update_notifier_list);
 
+void neigh_mac_update_register_notify(struct notifier_block *nb)
+{
+	atomic_notifier_chain_register(&neigh_mac_update_notifier_list, nb);
+}
+EXPORT_SYMBOL_GPL(neigh_mac_update_register_notify);
+
+void neigh_mac_update_unregister_notify(struct notifier_block *nb)
+{
+	atomic_notifier_chain_unregister(&neigh_mac_update_notifier_list, nb);
+}
+EXPORT_SYMBOL_GPL(neigh_mac_update_unregister_notify);
 
 /* Generic update routine.
    -- lladdr is new lladdr or NULL, if it is not supplied.
@@ -1235,6 +1247,7 @@ static int __neigh_update(struct neighbour *neigh, const u8 *lladdr,
 	int notify = 0;
 	struct net_device *dev;
 	int update_isrouter = 0;
+	struct neigh_mac_update nmu;
 
 	trace_neigh_update(neigh, lladdr, new, flags, nlmsg_pid);
 
@@ -1243,6 +1256,8 @@ static int __neigh_update(struct neighbour *neigh, const u8 *lladdr,
 	dev    = neigh->dev;
 	old    = neigh->nud_state;
 	err    = -EPERM;
+
+	memset(&nmu, 0, sizeof(struct neigh_mac_update));
 
 	if (neigh->dead) {
 		NL_SET_ERR_MSG(extack, "Neighbor entry is now dead");
@@ -1285,7 +1300,11 @@ static int __neigh_update(struct neighbour *neigh, const u8 *lladdr,
 		   and a new address is proposed:
 		   - compare new & old
 		   - if they are different, check override flag
+		   - copy old and new addresses for neigh update notification
 		 */
+		memcpy(nmu.old_mac, neigh->ha, dev->addr_len);
+		memcpy(nmu.update_mac, lladdr, dev->addr_len);
+
 		if ((old & NUD_VALID) &&
 		    !memcmp(lladdr, neigh->ha, dev->addr_len))
 			lladdr = neigh->ha;
@@ -1408,8 +1427,11 @@ out:
 	if (((new ^ old) & NUD_PERMANENT) || ext_learn_change)
 		neigh_update_gc_list(neigh);
 
-	if (notify)
+	if (notify) {
 		neigh_update_notify(neigh, nlmsg_pid);
+		atomic_notifier_call_chain(&neigh_mac_update_notifier_list, 0,
+					   (struct neigh_mac_update *)&nmu);
+	}
 
 	trace_neigh_update_done(neigh, err);
 

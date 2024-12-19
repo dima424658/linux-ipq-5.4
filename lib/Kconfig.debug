@@ -304,7 +304,7 @@ config HEADERS_INSTALL
 	  as uapi header sanity checks.
 
 config OPTIMIZE_INLINING
-	def_bool y
+	bool "Allow compiler to uninline functions marked 'inline'"
 	help
 	  This option determines if the kernel forces gcc to inline the functions
 	  developers have marked 'inline'. Doing so takes away freedom from gcc to
@@ -314,6 +314,8 @@ config OPTIMIZE_INLINING
 	  this algorithm is so good that allowing gcc 4.x and above to make the
 	  decision will become the default in the future. Until then this option
 	  is there to test gcc for this.
+
+	  If unsure, say N.
 
 config DEBUG_SECTION_MISMATCH
 	bool "Enable full Section mismatch analysis"
@@ -498,6 +500,12 @@ config DEBUG_OBJECTS_PERCPU_COUNTER
 	  If you say Y here, additional code will be inserted into the
 	  percpu counter routines to track the life time of percpu counter
 	  objects and validate the percpu counter operations.
+
+config DEBUG_OBJECTS_SKBUFF
+	bool "Debug sk_buff allocations"
+	depends on DEBUG_OBJECTS
+	help
+	  Enable this to turn on debugging of sk_buff's (incl. recycler)
 
 config DEBUG_OBJECTS_ENABLE_DEFAULT
 	int "debug_objects bootup default value (0-1)"
@@ -746,6 +754,10 @@ config DEBUG_STACKOVERFLOW
 	  corruption, especially if it appears in 'struct thread_info'
 
 	  If in doubt, say "N".
+
+config DEBUG_MEM_USAGE
+	default n
+	bool "Track memory usage selectively"
 
 source "lib/Kconfig.kasan"
 
@@ -2096,6 +2108,30 @@ source "lib/Kconfig.ubsan"
 
 config ARCH_HAS_DEVMEM_IS_ALLOWED
 	bool
+
+config STOPWATCH
+       bool
+       prompt "API to measure time elapsed between two events"
+       default n
+       help
+         This feature provides APIs to measure time elaspsed between any two
+         events with nanosecond precision. Multiple samples can be collected
+         by calling the STOPWATCH_(START/STOP) APIs.  The min, avg and max
+         values of all the samples can be viewed at /proc/stopwatch/<event>.
+         The counters are reset everytime the file is viewed.
+
+         If in doubt, say N here.
+
+config STOPWATCH_SOFT_IRQ
+	bool
+	depends on STOPWATCH
+	prompt "Measure soft IRQ processing time using stopwatch"
+	default n
+	help
+	  Measure the time taken to process each soft IRQ.
+	  The values can be viewed at /proc/stopwatch/softirq
+
+	  If in doubt, say N here.
 
 config STRICT_DEVMEM
 	bool "Filter access to /dev/mem"

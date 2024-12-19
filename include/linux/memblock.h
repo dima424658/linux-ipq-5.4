@@ -67,6 +67,7 @@ struct memblock_type {
 	unsigned long cnt;
 	unsigned long max;
 	phys_addr_t total_size;
+	phys_addr_t start_base;	/* start of the region */
 	struct memblock_region *regions;
 	char *name;
 };

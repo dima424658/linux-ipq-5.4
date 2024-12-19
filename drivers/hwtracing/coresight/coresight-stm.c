@@ -114,6 +114,8 @@ DEFINE_CORESIGHT_DEVLIST(stm_devs, "stm");
  * struct stm_drvdata - specifics associated to an STM component
  * @base:		memory mapped base address for this component.
  * @atclk:		optional clock for the core parts of the STM.
+ * @stmclk:		clock for the core parts of the STM.
+ * @stm_axi_clk:	clock for the core parts of the STM.
  * @csdev:		component vitals needed by the framework.
  * @spinlock:		only one at a time pls.
  * @chs:		the channels accociated to this STM.
@@ -131,6 +133,8 @@ DEFINE_CORESIGHT_DEVLIST(stm_devs, "stm");
 struct stm_drvdata {
 	void __iomem		*base;
 	struct clk		*atclk;
+	struct clk		*stmclk;
+	struct clk		*stm_axi_clk;
 	struct coresight_device	*csdev;
 	spinlock_t		spinlock;
 	struct channel_space	chs;
@@ -863,7 +867,8 @@ static int stm_probe(struct amba_device *adev, const struct amba_id *id)
 	size_t bitmap_size;
 	struct coresight_desc desc = { 0 };
 
-	desc.name = coresight_alloc_device_name(&stm_devs, dev);
+	if (of_property_read_string(dev->of_node, "coresight-name", &desc.name))
+		desc.name = coresight_alloc_device_name(&stm_devs, dev);
 	if (!desc.name)
 		return -ENOMEM;
 
@@ -874,6 +879,20 @@ static int stm_probe(struct amba_device *adev, const struct amba_id *id)
 	drvdata->atclk = devm_clk_get(&adev->dev, "atclk"); /* optional */
 	if (!IS_ERR(drvdata->atclk)) {
 		ret = clk_prepare_enable(drvdata->atclk);
+		if (ret)
+			return ret;
+	}
+
+	drvdata->stmclk = devm_clk_get(&adev->dev, "stm_clk");
+	if (!IS_ERR(drvdata->stmclk)) {
+		ret = clk_prepare_enable(drvdata->stmclk);
+		if (ret)
+			return ret;
+	}
+
+	drvdata->stm_axi_clk= devm_clk_get(&adev->dev, "stm_axi_clk");
+	if (!IS_ERR(drvdata->stm_axi_clk)) {
+		ret = clk_prepare_enable(drvdata->stm_axi_clk);
 		if (ret)
 			return ret;
 	}
@@ -958,6 +977,12 @@ static int stm_runtime_suspend(struct device *dev)
 	if (drvdata && !IS_ERR(drvdata->atclk))
 		clk_disable_unprepare(drvdata->atclk);
 
+	if (drvdata && !IS_ERR(drvdata->stmclk))
+		clk_disable_unprepare(drvdata->stmclk);
+
+	if (drvdata && !IS_ERR(drvdata->stm_axi_clk))
+		clk_disable_unprepare(drvdata->stm_axi_clk);
+
 	return 0;
 }
 
@@ -968,6 +993,11 @@ static int stm_runtime_resume(struct device *dev)
 	if (drvdata && !IS_ERR(drvdata->atclk))
 		clk_prepare_enable(drvdata->atclk);
 
+	if (drvdata && !IS_ERR(drvdata->stmclk))
+		clk_prepare_enable(drvdata->stmclk);
+
+	if (drvdata && !IS_ERR(drvdata->stm_axi_clk))
+		clk_prepare_enable(drvdata->stm_axi_clk);
 	return 0;
 }
 #endif

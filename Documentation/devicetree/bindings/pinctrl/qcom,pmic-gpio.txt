@@ -17,6 +17,7 @@ PMIC's from Qualcomm.
 		    "qcom,pm8941-gpio"
 		    "qcom,pm8994-gpio"
 		    "qcom,pm8998-gpio"
+		    "qcom,pm8074-gpio"
 		    "qcom,pma8084-gpio"
 		    "qcom,pmi8994-gpio"
 		    "qcom,pmi8998-gpio"

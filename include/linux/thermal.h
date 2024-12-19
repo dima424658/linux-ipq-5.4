@@ -63,11 +63,19 @@ enum thermal_device_mode {
 	THERMAL_DEVICE_ENABLED,
 };
 
+enum thermal_trip_activation_mode {
+	THERMAL_TRIP_ACTIVATION_DISABLED = 0,
+	THERMAL_TRIP_ACTIVATION_ENABLED,
+};
+
 enum thermal_trip_type {
 	THERMAL_TRIP_ACTIVE = 0,
 	THERMAL_TRIP_PASSIVE,
 	THERMAL_TRIP_HOT,
 	THERMAL_TRIP_CRITICAL,
+	THERMAL_TRIP_CONFIGURABLE_HI,
+	THERMAL_TRIP_CONFIGURABLE_LOW,
+	THERMAL_TRIP_CRITICAL_LOW,
 };
 
 enum thermal_trend {
@@ -96,6 +104,7 @@ struct thermal_zone_device_ops {
 	int (*unbind) (struct thermal_zone_device *,
 		       struct thermal_cooling_device *);
 	int (*get_temp) (struct thermal_zone_device *, int *);
+	int (*panic_notify) (struct thermal_zone_device *);
 	int (*set_trips) (struct thermal_zone_device *, int, int);
 	int (*get_mode) (struct thermal_zone_device *,
 			 enum thermal_device_mode *);
@@ -105,6 +114,8 @@ struct thermal_zone_device_ops {
 		enum thermal_trip_type *);
 	int (*get_trip_temp) (struct thermal_zone_device *, int, int *);
 	int (*set_trip_temp) (struct thermal_zone_device *, int, int);
+	int (*set_trip_activate) (struct thermal_zone_device *, int,
+					enum thermal_trip_activation_mode);
 	int (*get_trip_hyst) (struct thermal_zone_device *, int, int *);
 	int (*set_trip_hyst) (struct thermal_zone_device *, int, int);
 	int (*get_crit_temp) (struct thermal_zone_device *, int *);
@@ -341,6 +352,8 @@ struct thermal_genl_event {
  * @get_temp: a pointer to a function that reads the sensor temperature.
  *
  * Optional:
+ * @panic_notify: a pointer to a function that prints the temperature sensor
+ * 		  registers.
  * @get_trend: a pointer to a function that reads the sensor temperature trend.
  * @set_trips: a pointer to a function that sets a temperature window. When
  *	       this window is left the driver must inform the thermal core via
@@ -349,13 +362,18 @@ struct thermal_genl_event {
  *		   temperature.
  * @set_trip_temp: a pointer to a function that sets the trip temperature on
  *		   hardware.
+ * @activate_trip_type: a pointer to a function to enable/disable trip
+ *		temperature interrupts
  */
 struct thermal_zone_of_device_ops {
 	int (*get_temp)(void *, int *);
+	int (*panic_notify)(void *);
 	int (*get_trend)(void *, int, enum thermal_trend *);
 	int (*set_trips)(void *, int, int);
 	int (*set_emul_temp)(void *, int);
 	int (*set_trip_temp)(void *, int, int);
+	int (*set_trip_activate)(void *, int,
+				enum thermal_trip_activation_mode);
 };
 
 /**
@@ -555,5 +573,9 @@ static inline int thermal_generate_netlink_event(struct thermal_zone_device *tz,
 	return 0;
 }
 #endif
+
+/* Low temperature notification function */
+typedef void (*low_temp_notif_fn)(int sensor, int temp, int low_notif);
+int register_low_temp_notif(int sensor, int temp, low_temp_notif_fn fn);
 
 #endif /* __THERMAL_H__ */

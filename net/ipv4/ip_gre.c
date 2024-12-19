@@ -427,6 +427,26 @@ drop:
 	return 0;
 }
 
+bool gre_tunnel_is_fallback_dev(struct net_device *dev)
+{
+	struct net *net;
+	struct ip_tunnel_net *itn;
+	struct net_device *fb_tunnel_dev;
+
+	net = dev_net(dev);
+	if (!net)
+		return false;
+
+	itn  = net_generic(net, gre_tap_net_id);
+	if (!itn)
+		return false;
+
+	fb_tunnel_dev = itn->fb_tunnel_dev;
+
+	return (fb_tunnel_dev == dev);
+}
+EXPORT_SYMBOL(gre_tunnel_is_fallback_dev);
+
 static void __gre_xmit(struct sk_buff *skb, struct net_device *dev,
 		       const struct iphdr *tnl_params,
 		       __be16 proto)
@@ -631,6 +651,8 @@ static netdev_tx_t ipgre_xmit(struct sk_buff *skb,
 	if (gre_handle_offloads(skb, !!(tunnel->parms.o_flags & TUNNEL_CSUM)))
 		goto free_skb;
 
+	skb->skb_iif = dev->ifindex;
+
 	__gre_xmit(skb, dev, tnl_params, skb->protocol);
 	return NETDEV_TX_OK;
 
@@ -709,6 +731,8 @@ static netdev_tx_t gre_tap_xmit(struct sk_buff *skb,
 
 	if (skb_cow_head(skb, dev->needed_headroom))
 		goto free_skb;
+
+	skb->skb_iif = dev->ifindex;
 
 	__gre_xmit(skb, dev, &tunnel->parms.iph, htons(ETH_P_TEB));
 	return NETDEV_TX_OK;
@@ -798,7 +822,6 @@ static int ipgre_tunnel_ioctl(struct net_device *dev,
 /* Nice toy. Unfortunately, useless in real life :-)
    It allows to construct virtual multiprotocol broadcast "LAN"
    over the Internet, provided multicast routing is tuned.
-
 
    I have no idea was this bicycle invented before me,
    so that I had to set ARPHRD_IPGRE to a random value.
@@ -1302,6 +1325,7 @@ static void ipgre_tap_setup(struct net_device *dev)
 	dev->netdev_ops	= &gre_tap_netdev_ops;
 	dev->priv_flags &= ~IFF_TX_SKB_SHARING;
 	dev->priv_flags	|= IFF_LIVE_ADDR_CHANGE;
+	dev->priv_flags_ext	|= IFF_EXT_GRE_V4_TAP;
 	ip_tunnel_setup(dev, gre_tap_net_id);
 }
 

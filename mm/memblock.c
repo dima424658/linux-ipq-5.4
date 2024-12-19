@@ -566,6 +566,7 @@ int __init_memblock memblock_add_range(struct memblock_type *type,
 	/* special case for empty array */
 	if (type->regions[0].size == 0) {
 		WARN_ON(type->cnt != 1 || type->total_size);
+		type->start_base = base;
 		type->regions[0].base = base;
 		type->regions[0].size = size;
 		type->regions[0].flags = flags;
@@ -1585,7 +1586,11 @@ phys_addr_t __init memblock_mem_size(unsigned long limit_pfn)
 /* lowest address */
 phys_addr_t __init_memblock memblock_start_of_DRAM(void)
 {
+#ifdef CONFIG_ARM64
 	return memblock.memory.regions[0].base;
+#else
+	return memblock.memory.start_base;
+#endif
 }
 
 phys_addr_t __init_memblock memblock_end_of_DRAM(void)

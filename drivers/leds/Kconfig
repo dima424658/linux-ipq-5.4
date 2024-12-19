@@ -824,6 +824,15 @@ config LEDS_LM36274
 	  Say Y to enable the LM36274 LED driver for TI LMU devices.
 	  This supports the LED device LM36274.
 
+config LEDS_IPQ
+	tristate "LED Support for IPQ SoC"
+	depends on LEDS_CLASS
+	help
+	  This option enables support for the LEDs on IPQ SoCs.
+	  There is support for ESS, WIFI and configurable LEDs.
+	  Supports 2 and 3 wire mode.
+	  Say Y to enable LEDs on IPQ SoCs.
+
 comment "LED Triggers"
 source "drivers/leds/trigger/Kconfig"
 

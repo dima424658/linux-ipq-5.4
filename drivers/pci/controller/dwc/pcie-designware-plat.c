@@ -40,9 +40,6 @@ static int dw_plat_pcie_host_init(struct pcie_port *pp)
 	dw_pcie_setup_rc(pp);
 	dw_pcie_wait_for_link(pci);
 
-	if (IS_ENABLED(CONFIG_PCI_MSI))
-		dw_pcie_msi_init(pp);
-
 	return 0;
 }
 
@@ -123,12 +120,6 @@ static int dw_plat_add_pcie_port(struct dw_plat_pcie *dw_plat_pcie,
 	pp->irq = platform_get_irq(pdev, 1);
 	if (pp->irq < 0)
 		return pp->irq;
-
-	if (IS_ENABLED(CONFIG_PCI_MSI)) {
-		pp->msi_irq = platform_get_irq(pdev, 0);
-		if (pp->msi_irq < 0)
-			return pp->msi_irq;
-	}
 
 	pp->ops = &dw_plat_pcie_host_ops;
 

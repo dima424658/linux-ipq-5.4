@@ -13,7 +13,11 @@
 #include <linux/slab.h>
 #include <linux/iopoll.h>
 #include <linux/regulator/consumer.h>
+#include <linux/mfd/syscon.h>
+#include <linux/regmap.h>
 
+#include "sdhci-msm.h"
+#include "sdhci-msm-ice.h"
 #include "sdhci-pltfm.h"
 
 #define CORE_MCI_VERSION		0x50
@@ -116,6 +120,11 @@
 /* Timeout value to avoid infinite waiting for pwr_irq */
 #define MSM_PWR_IRQ_TIMEOUT_MS 5000
 
+#define SDHCI_ASYNC_INT_SUPPORT		BIT(29)
+#define SDHCI_MAX_BLK_LENGTH		BIT(16)
+#define SDHCI_BASE_SDCLK_FREQ		0xc800
+#define SDHCI_TIMEOUT_CLK_FREQ		0xb2
+
 #define msm_host_readl(msm_host, host, offset) \
 	msm_host->var_ops->msm_readl_relaxed(host, offset)
 
@@ -212,50 +221,6 @@ static const struct sdhci_msm_offset sdhci_msm_mci_offset = {
 	.core_ddr_config = 0x1bc,
 };
 
-struct sdhci_msm_variant_ops {
-	u32 (*msm_readl_relaxed)(struct sdhci_host *host, u32 offset);
-	void (*msm_writel_relaxed)(u32 val, struct sdhci_host *host,
-			u32 offset);
-};
-
-/*
- * From V5, register spaces have changed. Wrap this info in a structure
- * and choose the data_structure based on version info mentioned in DT.
- */
-struct sdhci_msm_variant_info {
-	bool mci_removed;
-	bool restore_dll_config;
-	const struct sdhci_msm_variant_ops *var_ops;
-	const struct sdhci_msm_offset *offset;
-};
-
-struct sdhci_msm_host {
-	struct platform_device *pdev;
-	void __iomem *core_mem;	/* MSM SDCC mapped address */
-	int pwr_irq;		/* power irq */
-	struct clk *bus_clk;	/* SDHC bus voter clock */
-	struct clk *xo_clk;	/* TCXO clk needed for FLL feature of cm_dll*/
-	struct clk_bulk_data bulk_clks[4]; /* core, iface, cal, sleep clocks */
-	unsigned long clk_rate;
-	struct mmc_host *mmc;
-	bool use_14lpp_dll_reset;
-	bool tuning_done;
-	bool calibration_done;
-	u8 saved_tuning_phase;
-	bool use_cdclp533;
-	u32 curr_pwr_state;
-	u32 curr_io_level;
-	wait_queue_head_t pwr_irq_wait;
-	bool pwr_irq_flag;
-	u32 caps_0;
-	bool mci_removed;
-	bool restore_dll_config;
-	const struct sdhci_msm_variant_ops *var_ops;
-	const struct sdhci_msm_offset *offset;
-	bool use_cdr;
-	u32 transfer_mode;
-	bool updated_ddr_cfg;
-};
 
 static const struct sdhci_msm_offset *sdhci_priv_msm_offset(struct sdhci_host *host)
 {
@@ -932,6 +897,8 @@ static int sdhci_msm_cm_dll_sdc4_calibration(struct sdhci_host *host)
 	struct sdhci_msm_host *msm_host = sdhci_pltfm_priv(pltfm_host);
 	const struct sdhci_msm_offset *msm_offset =
 					sdhci_priv_msm_offset(host);
+	struct device *dev = &msm_host->pdev->dev;
+	u32 ext_rclk_dly_val;
 
 	pr_debug("%s: %s: Enter\n", mmc_hostname(host->mmc), __func__);
 
@@ -947,6 +914,12 @@ static int sdhci_msm_cm_dll_sdc4_calibration(struct sdhci_host *host)
 	else
 		ddr_cfg_offset = msm_offset->core_ddr_config_old;
 	writel_relaxed(DDR_CONFIG_POR_VAL, host->ioaddr + ddr_cfg_offset);
+
+	if (!of_property_read_u32(dev->of_node, "qcom,ext_prg_rclk_dly_en",
+					&ext_rclk_dly_val)) {
+		writel_relaxed(ext_rclk_dly_val, host->ioaddr +
+						ddr_cfg_offset);
+	}
 
 	if (mmc->ios.enhanced_strobe) {
 		config = readl_relaxed(host->ioaddr +
@@ -1309,6 +1282,24 @@ static inline void sdhci_msm_complete_pwr_irq_wait(
 		struct sdhci_msm_host *msm_host)
 {
 	wake_up(&msm_host->pwr_irq_wait);
+}
+
+static void sdhci_msm_reset(struct sdhci_host *host, u8 mask)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_msm_host *msm_host = sdhci_pltfm_priv(pltfm_host);
+
+	/* Set ICE core to be reset in sync with SDHC core */
+	if (msm_host->ice.pdev) {
+		if (msm_host->ice_hci_support)
+			writel_relaxed(1, host->ioaddr +
+						HC_VENDOR_SPECIFIC_ICE_CTRL);
+		else
+			writel_relaxed(1,
+				host->ioaddr + CORE_VENDOR_SPEC_ICE_CTRL);
+	}
+
+	sdhci_reset(host, mask);
 }
 
 /*
@@ -1763,7 +1754,10 @@ static const struct of_device_id sdhci_msm_dt_match[] = {
 MODULE_DEVICE_TABLE(of, sdhci_msm_dt_match);
 
 static const struct sdhci_ops sdhci_msm_ops = {
-	.reset = sdhci_reset,
+	.crypto_engine_cfg = sdhci_msm_ice_cfg,
+	.crypto_cfg_reset = sdhci_msm_ice_cfg_reset,
+	.crypto_engine_reset = sdhci_msm_ice_reset,
+	.reset = sdhci_msm_reset,
 	.set_clock = sdhci_msm_set_clock,
 	.get_min_clock = sdhci_msm_get_min_clock,
 	.get_max_clock = sdhci_msm_get_max_clock,
@@ -1784,6 +1778,129 @@ static const struct sdhci_pltfm_data sdhci_msm_pdata = {
 	.ops = &sdhci_msm_ops,
 };
 
+static int sdhci_msm_setup_ice_clk(struct sdhci_msm_host *msm_host,
+						struct platform_device *pdev)
+{
+	int ret;
+
+	if (!msm_host->ice.pdev)
+		return 0;
+
+	/* Setup SDC ICE clock */
+	msm_host->ice_clk = devm_clk_get(&pdev->dev, "ice_core_clk");
+	if (IS_ERR(msm_host->ice_clk))
+		return 0;
+
+	/* ICE core has only one clock frequency for now */
+	ret = clk_set_rate(msm_host->ice_clk, msm_host->ice_clk_max);
+	if (ret) {
+		dev_err(&pdev->dev, "ICE_CLK rate set failed (%d) for %u\n",
+			ret, msm_host->ice_clk_max);
+		return ret;
+	}
+	ret = clk_prepare_enable(msm_host->ice_clk);
+	if (ret)
+		return ret;
+
+	msm_host->ice_clk_rate = msm_host->ice_clk_max;
+
+	return 0;
+}
+
+static int sdhci_msm_get_ice_device_vops(struct sdhci_host *host,
+					struct platform_device *pdev)
+{
+	int ret;
+
+	ret = sdhci_msm_ice_get_dev(host);
+	if (ret == -EPROBE_DEFER) {
+		/*
+		 * SDHCI driver might be probed before ICE driver does.
+		 * In that case we would like to return EPROBE_DEFER code
+		 * in order to delay its probing.
+		 */
+		dev_err(&pdev->dev, "%s: required ICE device not probed yet err = %d\n",
+			__func__, ret);
+	} else if (ret == -ENODEV) {
+		/*
+		 * ICE device is not enabled in DTS file. No need for further
+		 * initialization of ICE driver.
+		 */
+		dev_warn(&pdev->dev, "%s: ICE device is not enabled\n",
+			__func__);
+		ret = 0;
+	} else if (ret) {
+		dev_err(&pdev->dev, "%s: sdhci_msm_ice_get_dev failed %d\n",
+			__func__, ret);
+	}
+
+	return ret;
+}
+
+static int sdhci_msm_dt_get_array(struct device *dev, const char *prop_name,
+				 u32 **out, int *len, u32 size)
+{
+	int ret;
+	struct device_node *np = dev->of_node;
+	size_t sz;
+	u32 *arr;
+
+	*len = 0;
+	*out = NULL;
+
+	if (!of_get_property(np, prop_name, len))
+		return -EINVAL;
+
+	sz = *len = *len / sizeof(*arr);
+	if (sz <= 0 || (size > 0 && (sz > size))) {
+		dev_err(dev, "%s invalid size\n", prop_name);
+		return -EINVAL;
+	}
+
+	arr = devm_kzalloc(dev, sz * sizeof(*arr), GFP_KERNEL);
+	if (!arr) {
+		dev_err(dev, "%s failed allocating memory\n", prop_name);
+		return -ENOMEM;
+	}
+
+	ret = of_property_read_u32_array(np, prop_name, arr, sz);
+	if (ret < 0) {
+		dev_err(dev, "%s failed reading array %d\n", prop_name, ret);
+		return ret;
+	}
+
+	*out = arr;
+
+	return ret;
+}
+
+static void set_sdcc_hdrv_pull(struct platform_device *pdev,
+		struct device_node *syscon)
+{
+	struct regmap *regmap;
+	u32 base, regval;
+	int ret;
+
+	regmap = syscon_node_to_regmap(syscon);
+	if (IS_ERR(regmap))
+		return;
+
+	ret = of_property_read_u32_index(pdev->dev.of_node, "syscon", 1, &base);
+	if (ret < 0)
+		return;
+
+	ret = of_property_read_u32_index(pdev->dev.of_node, "syscon", 2, &regval);
+	if (ret < 0)
+		return;
+
+	/* write register TLMM_SDC1_HDRV_PULL_CTL for required drive strength
+	 * base on mask value
+	 */
+	ret = regmap_write(regmap, base, regval);
+	if (ret)
+		dev_err(&pdev->dev, "Failed to set SDCC drive strength:0x%08x\n", regval);
+}
+
 static int sdhci_msm_probe(struct platform_device *pdev)
 {
 	struct sdhci_host *host;
@@ -1797,6 +1914,9 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	u8 core_major;
 	const struct sdhci_msm_offset *msm_offset;
 	const struct sdhci_msm_variant_info *var_info;
+	u32 *ice_clk_table;
+	int ice_clk_table_len;
+	struct device_node *syscon_node;
 
 	host = sdhci_pltfm_init(pdev, &sdhci_msm_pdata, sizeof(*msm_host));
 	if (IS_ERR(host))
@@ -1817,6 +1937,8 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	 * the data associated with the version info.
 	 */
 	var_info = of_device_get_match_data(&pdev->dev);
+	if (!var_info)
+		goto pltfm_free;
 
 	msm_host->mci_removed = var_info->mci_removed;
 	msm_host->restore_dll_config = var_info->restore_dll_config;
@@ -1826,6 +1948,15 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	msm_offset = msm_host->offset;
 
 	sdhci_get_of_property(pdev);
+
+	syscon_node = of_parse_phandle(pdev->dev.of_node, "syscon", 0);
+	if (syscon_node)
+		set_sdcc_hdrv_pull(pdev, syscon_node);
+
+	/* get the ice device vops if present */
+	ret = sdhci_msm_get_ice_device_vops(host, pdev);
+	if (ret)
+		goto pltfm_free;
 
 	msm_host->saved_tuning_phase = INVALID_TUNING_PHASE;
 
@@ -1889,6 +2020,30 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 		dev_warn(&pdev->dev, "TCXO clk not present (%d)\n", ret);
 	}
 
+	if (msm_host->ice.pdev) {
+		if (sdhci_msm_dt_get_array(&pdev->dev, "qcom,ice-clk-rates",
+				&ice_clk_table, &ice_clk_table_len, 0)) {
+			dev_err(&pdev->dev, "failed parsing supported ice clock rates\n");
+			goto bus_clk_disable;
+		}
+		if (!ice_clk_table || !ice_clk_table_len) {
+			dev_err(&pdev->dev, "Invalid clock table\n");
+			goto bus_clk_disable;
+		}
+		if (ice_clk_table_len != 2) {
+			dev_err(&pdev->dev, "Need max and min frequencies in the table\n");
+			goto bus_clk_disable;
+		}
+		msm_host->ice_clk_max = ice_clk_table[0];
+		msm_host->ice_clk_min = ice_clk_table[1];
+		dev_dbg(&pdev->dev, "supported ICE clock rates (Hz): max: %u min: %u\n",
+				msm_host->ice_clk_max, msm_host->ice_clk_min);
+	}
+
+	ret = sdhci_msm_setup_ice_clk(msm_host, pdev);
+	if (ret)
+		goto bus_clk_disable;
+
 	if (!msm_host->mci_removed) {
 		core_memres = platform_get_resource(pdev, IORESOURCE_MEM, 1);
 		msm_host->core_mem = devm_ioremap_resource(&pdev->dev,
@@ -1914,6 +2069,24 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 		msm_host_writel(msm_host, config, host,
 				msm_offset->core_hc_mode);
 	}
+
+	/* Enable SDCC supported capabilities */
+	host->caps = SDHCI_CAN_VDD_300 | SDHCI_CAN_VDD_180 |
+			SDHCI_ASYNC_INT_SUPPORT |
+			SDHCI_CAN_64BIT | SDHCI_CAN_DO_HISPD |
+			SDHCI_CAN_DO_ADMA2 | SDHCI_CAN_DO_8BIT |
+			SDHCI_MAX_BLK_LENGTH | SDHCI_TIMEOUT_CLK_UNIT |
+			SDHCI_BASE_SDCLK_FREQ | SDHCI_TIMEOUT_CLK_FREQ;
+	host->caps1 = SDHCI_SUPPORT_SDR104 | SDHCI_SUPPORT_SDR50 |
+			SDHCI_SUPPORT_DDR50;
+
+	if ((device_property_read_bool(&pdev->dev, "qcom,emulation")) &&
+			(device_property_read_bool(&pdev->dev, "cap-mmc-highspeed") ||
+			device_property_read_bool(&pdev->dev, "mmc-ddr-3_3v") ||
+			device_property_read_bool(&pdev->dev, "mmc-ddr-1_8v")))
+		host->caps1 &= ~SDHCI_SUPPORT_SDR104;
+
+	host->quirks  |= SDHCI_QUIRK_MISSING_CAPS;
 
 	host_version = readw_relaxed((host->ioaddr + SDHCI_HOST_VERSION));
 	dev_dbg(&pdev->dev, "Host Version: 0x%x Vendor Version 0x%x\n",
@@ -1952,6 +2125,9 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	if (core_major == 1 && core_minor >= 0x49)
 		msm_host->updated_ddr_cfg = true;
 
+	if (core_major == 1 && core_minor >= 0x6b)
+		msm_host->ice_hci_support = true;
+
 	/*
 	 * Power on reset state may trigger power irq if previous status of
 	 * PWRCTL was either BUS_ON or IO_HIGH_V. So before enabling pwr irq
@@ -1988,6 +2164,17 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	}
 
 	msm_host->mmc->caps |= MMC_CAP_WAIT_WHILE_BUSY | MMC_CAP_NEED_RSP_BUSY;
+
+	if (msm_host->ice.pdev) {
+		ret = sdhci_msm_ice_init(host);
+		if (ret) {
+			dev_err(&pdev->dev, "%s: SDHCi ICE init failed (%d)\n",
+					mmc_hostname(host->mmc), ret);
+			ret = -EINVAL;
+			goto clk_disable;
+		}
+		host->is_crypto_en = true;
+	}
 
 	pm_runtime_get_noresume(&pdev->dev);
 	pm_runtime_set_active(&pdev->dev);
@@ -2049,9 +2236,16 @@ static __maybe_unused int sdhci_msm_runtime_suspend(struct device *dev)
 	struct sdhci_host *host = dev_get_drvdata(dev);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_msm_host *msm_host = sdhci_pltfm_priv(pltfm_host);
+	int ret;
 
-	clk_bulk_disable_unprepare(ARRAY_SIZE(msm_host->bulk_clks),
-				   msm_host->bulk_clks);
+	if (host->is_crypto_en) {
+		ret = sdhci_msm_ice_suspend(host);
+		if (ret < 0)
+			pr_err("%s: failed to suspend crypto engine %d\n",
+					mmc_hostname(host->mmc), ret);
+	} else
+		clk_bulk_disable_unprepare(ARRAY_SIZE(msm_host->bulk_clks),
+						msm_host->bulk_clks);
 
 	return 0;
 }
@@ -2067,6 +2261,22 @@ static __maybe_unused int sdhci_msm_runtime_resume(struct device *dev)
 				       msm_host->bulk_clks);
 	if (ret)
 		return ret;
+
+	if (host->is_crypto_en && !IS_ERR(msm_host->ice_clk)) {
+		ret = clk_prepare_enable(msm_host->ice_clk);
+		if (ret) {
+		        pr_err("%s: %s: failed to enable the ice-clk %d\n",
+				mmc_hostname(host->mmc), __func__, ret);
+		        goto skip_ice_resume;
+		}
+
+		ret = sdhci_msm_ice_resume(host);
+		if (ret)
+			pr_err("%s: failed to resume crypto engine %d\n",
+					mmc_hostname(host->mmc), ret);
+
+        }
+skip_ice_resume:
 	/*
 	 * Whenever core-clock is gated dynamically, it's needed to
 	 * restore the SDR DLL settings when the clock is ungated.

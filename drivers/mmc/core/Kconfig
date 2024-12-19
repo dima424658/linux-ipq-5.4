@@ -13,6 +13,16 @@ config PWRSEQ_EMMC
 	  This driver can also be built as a module. If so, the module
 	  will be called pwrseq_emmc.
 
+config PWRSEQ_IPQ
+	tristate "HW reset support for IPQ SD card block"
+	depends on OF
+	help
+	  This selects hardware reset support for the IPQ SD card
+	  block. By default this option is set to n.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called pwrseq_ipq.
+
 config PWRSEQ_SD8787
 	tristate "HW reset support for SD8787 BT + Wifi module"
 	depends on OF && (MWIFIEX || BT_MRVL_SDIO || LIBERTAS_SDIO)

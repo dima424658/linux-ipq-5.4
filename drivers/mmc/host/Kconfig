@@ -498,6 +498,25 @@ config MMC_SDHCI_MSM
 
 	  If unsure, say N.
 
+config MMC_SDHCI_MSM_ICE
+	bool "Qualcomm Technologies, Inc Inline Crypto Engine for SDHCI core"
+	depends on MMC_SDHCI_MSM && CRYPTO_DEV_QCOM_ICE
+	help
+	  This selects the QTI specific additions to support Inline Crypto
+	  Engine (ICE). ICE accelerates the crypto operations and maintains
+	  the high SDHCI performance.
+
+	  Select this if you have ICE supported for SDHCI on QTI chipset.
+	  If unsure, say N.
+
+config MMC_SDHCI_MSM_ICE_PER_PART_DUN
+	bool "Use Per Partition DUN"
+	depends on MMC_SDHCI_MSM_ICE
+	default n
+	help
+	  This enables the DUN to be configured using per partition sector offset.
+          If you are enabling ROOTFS encryption using AES XTS mode, then set y.
+
 config MMC_MXC
 	tristate "Freescale i.MX21/27/31 or MPC512x Multimedia Card support"
 	depends on ARCH_MXC || PPC_MPC512x

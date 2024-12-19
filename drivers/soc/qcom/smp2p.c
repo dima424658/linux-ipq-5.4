@@ -43,6 +43,9 @@
 
 #define SMP2P_MAGIC 0x504d5324
 
+#define GLOBAL_TIMER_LO		0x0
+#define GLOBAL_TIMER_HI		0x4
+
 /**
  * struct smp2p_smem_item - in memory communication structure
  * @magic:		magic number
@@ -123,6 +126,7 @@ struct smp2p_entry {
  * @mbox_chan:	apcs ipc mailbox channel handle
  * @inbound:	list of inbound entries
  * @outbound:	list of outbound entries
+ * @need_ssr_ack fw expects ack for irq
  */
 struct qcom_smp2p {
 	struct device *dev;
@@ -146,7 +150,58 @@ struct qcom_smp2p {
 
 	struct list_head inbound;
 	struct list_head outbound;
+	bool need_ssr_ack;
 };
+
+#define SMP2PLOG_SIZE 256
+#define SMP2P_OB_LOG_SIZE 2
+static void __iomem *global_timer_base;
+
+struct smp2p_log {
+	u64 timestamp;
+	unsigned int global_timer_lo;
+	unsigned int global_timer_hi;
+	u32 value;
+	u32 last_value;
+	u32 status;
+} smp2pintr[SMP2PLOG_SIZE];
+unsigned int smp2pintrindex;
+
+struct  smp2p_ob_cmd_log {
+	u64 timestamp;
+	unsigned int global_timer_lo;
+	unsigned int global_timer_hi;
+	u8 bit_no;
+	u32 mask;
+	u32 value;
+} smp2p_ob_log[SMP2P_OB_LOG_SIZE];
+unsigned int smp2p_ob_log_index;
+
+struct qcom_smp2p *g_smp2p;
+void qcom_clear_smp2p_last_value(void)
+{
+	struct smp2p_entry *entry;
+
+	list_for_each_entry(entry, &g_smp2p->inbound, node)
+		entry->last_value = 0x0;
+}
+EXPORT_SYMBOL(qcom_clear_smp2p_last_value);
+
+void qcom_log_smp2p_ob_cmd(u8 bit_no, u32 mask, u32 value)
+{
+	smp2p_ob_log[smp2p_ob_log_index].timestamp =
+						ktime_to_us(ktime_get());
+	if (global_timer_base) {
+		smp2p_ob_log[smp2p_ob_log_index].global_timer_lo =
+			readl_relaxed(global_timer_base + GLOBAL_TIMER_LO) - 0x13;
+		smp2p_ob_log[smp2p_ob_log_index].global_timer_hi =
+			readl_relaxed(global_timer_base + GLOBAL_TIMER_HI);
+	}
+	smp2p_ob_log[smp2p_ob_log_index].bit_no = bit_no;
+	smp2p_ob_log[smp2p_ob_log_index].mask = mask;
+	smp2p_ob_log[smp2p_ob_log_index++].value = value;
+	smp2p_ob_log_index &= (SMP2P_OB_LOG_SIZE - 1);
+}
 
 static void qcom_smp2p_kick(struct qcom_smp2p *smp2p)
 {
@@ -218,6 +273,19 @@ static irqreturn_t qcom_smp2p_intr(int irq, void *data)
 		val = readl(entry->value);
 
 		status = val ^ entry->last_value;
+		smp2pintr[smp2pintrindex].timestamp =
+				ktime_to_us(ktime_get());
+		if (global_timer_base) {
+			smp2pintr[smp2pintrindex].global_timer_lo =
+				readl_relaxed(global_timer_base + GLOBAL_TIMER_LO) - 0x13;
+			smp2pintr[smp2pintrindex].global_timer_hi =
+				readl_relaxed(global_timer_base + GLOBAL_TIMER_HI);
+		}
+		smp2pintr[smp2pintrindex].value = val;
+		smp2pintr[smp2pintrindex].last_value = entry->last_value;
+		smp2pintr[smp2pintrindex++].status = status;
+		smp2pintrindex &= (SMP2PLOG_SIZE - 1);
+
 		entry->last_value = val;
 
 		/* No changes of this entry? */
@@ -235,6 +303,9 @@ static irqreturn_t qcom_smp2p_intr(int irq, void *data)
 			}
 		}
 	}
+
+	if (smp2p->need_ssr_ack)
+		qcom_smp2p_kick(smp2p);
 
 	return IRQ_HANDLED;
 }
@@ -352,6 +423,8 @@ static int qcom_smp2p_outbound_entry(struct qcom_smp2p *smp2p,
 
 	/* Make the logical entry reference the physical value */
 	entry->value = &out->entries[out->valid_entries].value;
+	smp2p->need_ssr_ack = of_property_read_bool(node,
+						"qcom,smp2p-feature-ssr-ack");
 
 	out->valid_entries++;
 
@@ -448,11 +521,13 @@ static int qcom_smp2p_probe(struct platform_device *pdev)
 	const char *key;
 	int irq;
 	int ret;
+	unsigned int global_timer;
 
 	smp2p = devm_kzalloc(&pdev->dev, sizeof(*smp2p), GFP_KERNEL);
 	if (!smp2p)
 		return -ENOMEM;
 
+	g_smp2p = smp2p;
 	smp2p->dev = &pdev->dev;
 	INIT_LIST_HEAD(&smp2p->inbound);
 	INIT_LIST_HEAD(&smp2p->outbound);
@@ -540,6 +615,15 @@ static int qcom_smp2p_probe(struct platform_device *pdev)
 		goto unwind_interfaces;
 	}
 
+	/* Get the global timer base and remap it
+	 * to the kernel address space
+	 */
+	ret = of_property_read_u32(pdev->dev.of_node, "global_timer",
+							&global_timer);
+	if (!ret)
+		global_timer_base = ioremap_nocache(global_timer, 8);
+	else
+		pr_info("global timer is null\n");
 
 	return 0;
 
@@ -576,7 +660,12 @@ static int qcom_smp2p_remove(struct platform_device *pdev)
 	mbox_free_channel(smp2p->mbox_chan);
 
 	smp2p->out->valid_entries = 0;
-
+	memset(smp2pintr, 0, sizeof(struct smp2p_log) * SMP2PLOG_SIZE);
+	smp2pintrindex = 0;
+	memset(smp2p_ob_log, 0, sizeof(struct smp2p_ob_cmd_log) * SMP2P_OB_LOG_SIZE);
+	smp2p_ob_log_index = 0;
+	iounmap(global_timer_base);
+	global_timer_base = NULL;
 	return 0;
 }
 

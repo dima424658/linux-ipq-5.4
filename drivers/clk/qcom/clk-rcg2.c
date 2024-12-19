@@ -96,7 +96,7 @@ err:
 	return 0;
 }
 
-static int update_config(struct clk_rcg2 *rcg)
+static int update_config(struct clk_rcg2 *rcg, bool check_update_clear)
 {
 	int count, ret;
 	u32 cmd;
@@ -107,6 +107,9 @@ static int update_config(struct clk_rcg2 *rcg)
 				 CMD_UPDATE, CMD_UPDATE);
 	if (ret)
 		return ret;
+
+	if (!check_update_clear)
+		return 0;
 
 	/* Wait for update to take effect */
 	for (count = 500; count > 0; count--) {
@@ -126,14 +129,19 @@ static int clk_rcg2_set_parent(struct clk_hw *hw, u8 index)
 {
 	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
 	int ret;
+	bool check_update_clear = true;
 	u32 cfg = rcg->parent_map[index].cfg << CFG_SRC_SEL_SHIFT;
+
+	if ((rcg->flags & CLK_RCG2_HW_CONTROLLED) &&
+	    !clk_hw_is_enabled(clk_hw_get_parent_by_index(hw, index)))
+		check_update_clear = false;
 
 	ret = regmap_update_bits(rcg->clkr.regmap, RCG_CFG_OFFSET(rcg),
 				 CFG_SRC_SEL_MASK, cfg);
 	if (ret)
 		return ret;
 
-	return update_config(rcg);
+	return update_config(rcg, check_update_clear);
 }
 
 /*
@@ -144,18 +152,18 @@ static int clk_rcg2_set_parent(struct clk_hw *hw, u8 index)
  *            hid_div       n
  */
 static unsigned long
-calc_rate(unsigned long rate, u32 m, u32 n, u32 mode, u32 hid_div)
+calc_rate(unsigned long parent_rate, u32 m, u32 n, u32 mode, u32 hid_div)
 {
+	u64 rate = parent_rate;
+
 	if (hid_div) {
 		rate *= 2;
-		rate /= hid_div + 1;
+		do_div(rate, hid_div + 1);
 	}
 
 	if (mode) {
-		u64 tmp = rate;
-		tmp *= m;
-		do_div(tmp, n);
-		rate = tmp;
+		rate *= m;
+		do_div(rate, n);
 	}
 
 	return rate;
@@ -188,14 +196,15 @@ clk_rcg2_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)
 	return calc_rate(parent_rate, m, n, mode, hid_div);
 }
 
-static int _freq_tbl_determine_rate(struct clk_hw *hw, const struct freq_tbl *f,
-				    struct clk_rate_request *req,
-				    enum freq_policy policy)
+static const struct freq_tbl *
+clk_rcg2_find_best_freq(struct clk_hw *hw, const struct freq_tbl *f,
+			unsigned long rate, enum freq_policy policy)
 {
-	unsigned long clk_flags, rate = req->rate;
-	struct clk_hw *p;
+	unsigned long req_rate = rate, best = 0, freq;
 	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
 	int index;
+	u64 tmp;
+	const struct freq_tbl *best_ftable = NULL;
 
 	switch (policy) {
 	case FLOOR:
@@ -205,9 +214,64 @@ static int _freq_tbl_determine_rate(struct clk_hw *hw, const struct freq_tbl *f,
 		f = qcom_find_freq(f, rate);
 		break;
 	default:
-		return -EINVAL;
+		return best_ftable;
 	};
 
+	/*
+	 * Check for duplicate frequencies in frequency table if
+	 * CLK_SET_RATE_PARENT flag is not set
+	 */
+	if (!f || (clk_hw_get_flags(hw) & CLK_SET_RATE_PARENT) ||
+	    ((f->freq && (f + 1)->freq != f->freq)))
+		return f;
+
+	/*
+	 * Check for all the duplicate entries in frequency table and
+	 * calculate the actual rate from current parent rate with each
+	 * entries pre_div, m and n values. The entry, which gives the
+	 * minimum difference in requested rate and actual rate, will be
+	 * selected as the best one.
+	 */
+	for (freq = f->freq; freq == f->freq; f++) {
+		index = qcom_find_src_index(hw, rcg->parent_map, f->src);
+		if (index < 0)
+			continue;
+
+		rate =  clk_hw_get_rate(clk_hw_get_parent_by_index(hw, index));
+		if (rcg->hid_width && f->pre_div) {
+			rate *= 2;
+			rate /= f->pre_div + 1;
+		}
+
+		if (rcg->mnd_width && f->n) {
+			tmp = rate;
+			tmp = tmp * f->n;
+			do_div(tmp, f->m);
+			rate = tmp;
+		}
+
+		if (abs(req_rate - rate) < abs(best - rate)) {
+			best_ftable = f;
+			best = rate;
+
+			if (req_rate == rate)
+				break;
+		}
+	}
+
+	return best_ftable;
+}
+
+static int _freq_tbl_determine_rate(struct clk_hw *hw, const struct freq_tbl *f,
+				    struct clk_rate_request *req,
+				    enum freq_policy policy)
+{
+	unsigned long clk_flags, rate = req->rate;
+	struct clk_hw *p;
+	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
+	int index;
+
+	f = clk_rcg2_find_best_freq(hw, f, rate, policy);
 	if (!f)
 		return -EINVAL;
 
@@ -310,12 +374,19 @@ static int __clk_rcg2_configure(struct clk_rcg2 *rcg, const struct freq_tbl *f)
 static int clk_rcg2_configure(struct clk_rcg2 *rcg, const struct freq_tbl *f)
 {
 	int ret;
+	bool check_update_clear = true;
+	struct clk_hw *hw = &rcg->clkr.hw;
+	int index = qcom_find_src_index(hw, rcg->parent_map, f->src);
 
 	ret = __clk_rcg2_configure(rcg, f);
 	if (ret)
 		return ret;
 
-	return update_config(rcg);
+	if ((rcg->flags & CLK_RCG2_HW_CONTROLLED) &&
+	    !clk_hw_is_enabled(clk_hw_get_parent_by_index(hw, index)))
+		check_update_clear = false;
+
+	return update_config(rcg, check_update_clear);
 }
 
 static int __clk_rcg2_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -324,17 +395,7 @@ static int __clk_rcg2_set_rate(struct clk_hw *hw, unsigned long rate,
 	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
 	const struct freq_tbl *f;
 
-	switch (policy) {
-	case FLOOR:
-		f = qcom_find_freq_floor(rcg->freq_tbl, rate);
-		break;
-	case CEIL:
-		f = qcom_find_freq(rcg->freq_tbl, rate);
-		break;
-	default:
-		return -EINVAL;
-	};
-
+	f = clk_rcg2_find_best_freq(hw, rcg->freq_tbl, rate, policy);
 	if (!f)
 		return -EINVAL;
 
@@ -795,7 +856,7 @@ static int clk_gfx3d_set_rate_and_parent(struct clk_hw *hw, unsigned long rate,
 	if (ret)
 		return ret;
 
-	return update_config(rcg);
+	return update_config(rcg, true);
 }
 
 static int clk_gfx3d_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -874,7 +935,7 @@ static int clk_rcg2_shared_set_rate(struct clk_hw *hw, unsigned long rate,
 	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
 	const struct freq_tbl *f;
 
-	f = qcom_find_freq(rcg->freq_tbl, rate);
+	f = clk_rcg2_find_best_freq(hw, rcg->freq_tbl, rate, CEIL);
 	if (!f)
 		return -EINVAL;
 
@@ -907,7 +968,7 @@ static int clk_rcg2_shared_enable(struct clk_hw *hw)
 	if (ret)
 		return ret;
 
-	ret = update_config(rcg);
+	ret = update_config(rcg, true);
 	if (ret)
 		return ret;
 
@@ -938,7 +999,7 @@ static void clk_rcg2_shared_disable(struct clk_hw *hw)
 	regmap_write(rcg->clkr.regmap, rcg->cmd_rcgr + CFG_REG,
 		     rcg->safe_src_index << CFG_SRC_SEL_SHIFT);
 
-	update_config(rcg);
+	update_config(rcg, true);
 
 	clk_rcg2_clear_force_enable(hw);
 

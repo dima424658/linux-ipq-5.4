@@ -29,6 +29,7 @@ struct qcom_rpm_reg {
 	unsigned int enabled_updated:1;
 	unsigned int uv_updated:1;
 	unsigned int load_updated:1;
+	unsigned int corn_updated:1;
 };
 
 struct rpm_regulator_req {
@@ -40,6 +41,7 @@ struct rpm_regulator_req {
 #define RPM_KEY_SWEN	0x6e657773 /* "swen" */
 #define RPM_KEY_UV	0x00007675 /* "uv" */
 #define RPM_KEY_MA	0x0000616d /* "ma" */
+#define RPM_KEY_CORN 	0x6e726f63 /* "corn" */
 
 static int rpm_reg_write_active(struct qcom_rpm_reg *vreg)
 {
@@ -56,6 +58,13 @@ static int rpm_reg_write_active(struct qcom_rpm_reg *vreg)
 
 	if (vreg->uv_updated && vreg->is_enabled) {
 		req[reqlen].key = cpu_to_le32(RPM_KEY_UV);
+		req[reqlen].nbytes = cpu_to_le32(sizeof(u32));
+		req[reqlen].value = cpu_to_le32(vreg->uV);
+		reqlen++;
+	}
+
+	if (vreg->corn_updated && vreg->is_enabled) {
+		req[reqlen].key = cpu_to_le32(RPM_KEY_CORN);
 		req[reqlen].nbytes = cpu_to_le32(sizeof(u32));
 		req[reqlen].value = cpu_to_le32(vreg->uV);
 		reqlen++;
@@ -78,6 +87,7 @@ static int rpm_reg_write_active(struct qcom_rpm_reg *vreg)
 		vreg->enabled_updated = 0;
 		vreg->uv_updated = 0;
 		vreg->load_updated = 0;
+		vreg->corn_updated = 0;
 	}
 
 	return ret;
@@ -146,6 +156,25 @@ static int rpm_reg_set_voltage(struct regulator_dev *rdev,
 	return ret;
 }
 
+static int rpm_reg_set_corner(struct regulator_dev *rdev,
+			       int min_uV,
+			       int max_uV,
+			       unsigned *selector)
+{
+	struct qcom_rpm_reg *vreg = rdev_get_drvdata(rdev);
+	int ret;
+	int old_uV = vreg->uV;
+
+	vreg->uV = min_uV;
+	vreg->corn_updated = 1;
+
+	ret = rpm_reg_write_active(vreg);
+	if (ret)
+		vreg->uV = old_uV;
+
+	return ret;
+}
+
 static int rpm_reg_set_load(struct regulator_dev *rdev, int load_uA)
 {
 	struct qcom_rpm_reg *vreg = rdev_get_drvdata(rdev);
@@ -197,6 +226,26 @@ static const struct regulator_ops rpm_bob_ops = {
 
 	.get_voltage = rpm_reg_get_voltage,
 	.set_voltage = rpm_reg_set_voltage,
+};
+
+static const struct regulator_ops rpm_mp5496_ops = {
+	.enable = rpm_reg_enable,
+	.disable = rpm_reg_disable,
+	.is_enabled = rpm_reg_is_enabled,
+	.list_voltage = regulator_list_voltage_linear_range,
+
+	.get_voltage = rpm_reg_get_voltage,
+	.set_voltage = rpm_reg_set_voltage,
+};
+
+static const struct regulator_ops rpm_mp5496_corner_ops = {
+	.enable = rpm_reg_enable,
+	.disable = rpm_reg_disable,
+	.is_enabled = rpm_reg_is_enabled,
+	.list_voltage = regulator_list_voltage_linear_range,
+
+	.get_voltage = rpm_reg_get_voltage,
+	.set_voltage = rpm_reg_set_corner,
 };
 
 static const struct regulator_desc pma8084_hfsmps = {
@@ -501,12 +550,71 @@ static const struct regulator_desc pms405_pldo600 = {
 	.ops = &rpm_smps_ldo_ops,
 };
 
+static const struct regulator_desc ipq6018_mp5496_smpa2 = {
+	.linear_ranges = (struct regulator_linear_range[]) {
+		REGULATOR_LINEAR_RANGE(725000, 0, 27, 12500),
+	},
+	.n_linear_ranges = 1,
+	.n_voltages = 28,
+	.ops = &rpm_mp5496_ops,
+};
+
+static const struct regulator_desc ipq6018_mp5496_ldoa2 = {
+	.linear_ranges = (struct regulator_linear_range[]) {
+		REGULATOR_LINEAR_RANGE(1800000, 0, 60, 25000),
+	},
+	.n_linear_ranges = 1,
+	.n_voltages = 61,
+	.ops = &rpm_mp5496_ops,
+};
+
+static const struct regulator_desc ipq9574_mp5496_smpa1 = {
+	.linear_ranges = (struct regulator_linear_range[]) {
+		REGULATOR_LINEAR_RANGE(600000, 0, 37, 12500),
+	},
+	.n_linear_ranges = 1,
+	.n_voltages = 38,
+	.ops = &rpm_mp5496_ops,
+};
+
+static const struct regulator_desc ipq9574_mp5496_smpa2 = {
+	.linear_ranges = (struct regulator_linear_range[]) {
+		REGULATOR_LINEAR_RANGE(712500, 0, 22, 12500),
+	},
+	.n_linear_ranges = 1,
+	.n_voltages = 23,
+	.ops = &rpm_mp5496_ops,
+};
+
+static const struct regulator_desc ipq9574_mp5496_smpa4 = {
+	.linear_ranges = (struct regulator_linear_range[]) {
+		REGULATOR_LINEAR_RANGE(1, 0, 9, 1),
+	},
+	.n_linear_ranges = 1,
+	.n_voltages = 9,
+	.ops = &rpm_mp5496_corner_ops,
+};
+
 struct rpm_regulator_data {
 	const char *name;
 	u32 type;
 	u32 id;
 	const struct regulator_desc *desc;
 	const char *supply;
+	int boot_uV; /* To store the bootup voltage set by bootloaders */
+};
+
+static const struct rpm_regulator_data rpm_ipq9574_mp5496_regulators[] = {
+	{ "s1", QCOM_SMD_RPM_SMPA, 1, &ipq9574_mp5496_smpa1, "s1", 875000 },
+	{ "s2", QCOM_SMD_RPM_SMPA, 2, &ipq9574_mp5496_smpa2, "s2", 875000 },
+	{ "s4", QCOM_SMD_RPM_SMPA, 4, &ipq9574_mp5496_smpa4, "s4", 5 }, //5 - NOMINAL CORNER
+	{}
+};
+
+static const struct rpm_regulator_data rpm_ipq6018_mp5496_regulators[] = {
+	{ "s2", QCOM_SMD_RPM_SMPA, 2, &ipq6018_mp5496_smpa2, "s2", 875000 },
+	{ "l2", QCOM_SMD_RPM_LDOA, 2, &ipq6018_mp5496_ldoa2, "l2", 2950000 },
+	{}
 };
 
 static const struct rpm_regulator_data rpm_pm8841_regulators[] = {
@@ -765,6 +873,8 @@ static const struct rpm_regulator_data rpm_pms405_regulators[] = {
 };
 
 static const struct of_device_id rpm_of_match[] = {
+	{ .compatible = "qcom,rpm-ipq9574-mp5496-regulators", .data = &rpm_ipq9574_mp5496_regulators },
+	{ .compatible = "qcom,rpm-ipq6018-mp5496-regulators", .data = &rpm_ipq6018_mp5496_regulators },
 	{ .compatible = "qcom,rpm-pm8841-regulators", .data = &rpm_pm8841_regulators },
 	{ .compatible = "qcom,rpm-pm8916-regulators", .data = &rpm_pm8916_regulators },
 	{ .compatible = "qcom,rpm-pm8941-regulators", .data = &rpm_pm8941_regulators },
@@ -811,6 +921,8 @@ static int rpm_regulator_init_vreg(struct qcom_rpm_reg *vreg, struct device *dev
 	vreg->rpm	= rpm;
 	vreg->type	= rpm_data->type;
 	vreg->id	= rpm_data->id;
+	if (rpm_data->boot_uV)
+		vreg->uV = rpm_data->boot_uV;
 
 	memcpy(&vreg->desc, rpm_data->desc, sizeof(vreg->desc));
 	vreg->desc.name = rpm_data->name;
@@ -860,7 +972,6 @@ static int rpm_reg_probe(struct platform_device *pdev)
 		}
 
 		ret = rpm_regulator_init_vreg(vreg, dev, node, rpm, vreg_data);
-
 		if (ret < 0) {
 			of_node_put(node);
 			return ret;

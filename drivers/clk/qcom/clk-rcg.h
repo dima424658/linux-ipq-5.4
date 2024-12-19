@@ -135,6 +135,7 @@ extern const struct clk_ops clk_dyn_rcg_ops;
  * @mnd_width: number of bits in m/n/d values
  * @hid_width: number of bits in half integer divider
  * @safe_src_index: safe src index value
+ * @flags: RCG2 specific clock flags
  * @parent_map: map from software's parent index to hardware's src_sel field
  * @freq_tbl: frequency table
  * @clkr: regmap clock handle
@@ -145,6 +146,9 @@ struct clk_rcg2 {
 	u8			mnd_width;
 	u8			hid_width;
 	u8			safe_src_index;
+
+#define CLK_RCG2_HW_CONTROLLED		BIT(0)
+	u8			flags;
 	const struct parent_map	*parent_map;
 	const struct freq_tbl	*freq_tbl;
 	struct clk_regmap	clkr;

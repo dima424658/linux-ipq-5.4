@@ -980,21 +980,30 @@ static unsigned int msm_get_mctrl(struct uart_port *port)
 	return TIOCM_CAR | TIOCM_CTS | TIOCM_DSR | TIOCM_RTS;
 }
 
-static void msm_reset(struct uart_port *port)
+static void msm_reset(struct uart_port *port, bool reset_tx)
 {
 	struct msm_port *msm_port = UART_TO_MSM(port);
+	struct device *dev = msm_port->uart.dev;
 	unsigned int mr;
 
 	/* reset everything */
 	msm_write(port, UART_CR_CMD_RESET_RX, UART_CR);
-	msm_write(port, UART_CR_CMD_RESET_TX, UART_CR);
+
+	if (reset_tx)
+		msm_write(port, UART_CR_CMD_RESET_TX, UART_CR);
+
 	msm_write(port, UART_CR_CMD_RESET_ERR, UART_CR);
 	msm_write(port, UART_CR_CMD_RESET_BREAK_INT, UART_CR);
 	msm_write(port, UART_CR_CMD_RESET_CTS, UART_CR);
-	msm_write(port, UART_CR_CMD_RESET_RFR, UART_CR);
-	mr = msm_read(port, UART_MR1);
-	mr &= ~UART_MR1_RX_RDY_CTL;
-	msm_write(port, mr, UART_MR1);
+
+	if (of_find_property(dev->of_node, "qca,bt-rfr-fixup", NULL)) {
+		msm_write(port, UART_CR_CMD_SET_RFR, UART_CR);
+	} else {
+		msm_write(port, UART_CR_CMD_RESET_RFR, UART_CR);
+		mr = msm_read(port, UART_MR1);
+		mr &= ~UART_MR1_RX_RDY_CTL;
+		msm_write(port, mr, UART_MR1);
+	}
 
 	/* Disable DM modes */
 	if (msm_port->is_uartdm)
@@ -1107,6 +1116,8 @@ static int msm_set_baud_rate(struct uart_port *port, unsigned int baud,
 	struct msm_port *msm_port = UART_TO_MSM(port);
 	const struct msm_baud_map *entry;
 	unsigned long flags, rate;
+	struct device *dev = msm_port->uart.dev;
+	u32 tx_watermark = 10;
 
 	flags = *saved_flags;
 	spin_unlock_irqrestore(&port->lock, flags);
@@ -1140,10 +1151,17 @@ static int msm_set_baud_rate(struct uart_port *port, unsigned int baud,
 	msm_write(port, watermark, UART_RFWR);
 
 	/* set TX watermark */
-	msm_write(port, 10, UART_TFWR);
+	of_property_read_u32(dev->of_node, "tx-watermark", &tx_watermark);
+	msm_write(port, tx_watermark, UART_TFWR);
 
 	msm_write(port, UART_CR_CMD_PROTECTION_EN, UART_CR);
-	msm_reset(port);
+
+	/*
+	 * Check for console in this port and don't do TX reset
+	 * if console is enabled in this port.
+	 */
+	msm_reset(port, !(uart_console(port) &&
+				(port->cons->flags & CON_ENABLED)));
 
 	/* Enable RX and TX */
 	msm_write(port, UART_CR_TX_ENABLE | UART_CR_RX_ENABLE, UART_CR);
@@ -1566,6 +1584,33 @@ static struct msm_port msm_uart_ports[] = {
 			.line = 2,
 		},
 	},
+	{
+		.uart = {
+			.iotype = UPIO_MEM,
+			.ops = &msm_uart_pops,
+			.flags = UPF_BOOT_AUTOCONF,
+			.fifosize = 64,
+			.line = 3,
+		},
+	},
+	{
+		.uart = {
+			.iotype = UPIO_MEM,
+			.ops = &msm_uart_pops,
+			.flags = UPF_BOOT_AUTOCONF,
+			.fifosize = 64,
+			.line = 4,
+		},
+	},
+	{
+		.uart = {
+			.iotype = UPIO_MEM,
+			.ops = &msm_uart_pops,
+			.flags = UPF_BOOT_AUTOCONF,
+			.fifosize = 64,
+			.line = 5,
+		},
+	},
 };
 
 #define UART_NR	ARRAY_SIZE(msm_uart_ports)
@@ -1577,7 +1622,8 @@ static inline struct uart_port *msm_get_port_from_line(unsigned int line)
 
 #ifdef CONFIG_SERIAL_MSM_CONSOLE
 static void __msm_console_write(struct uart_port *port, const char *s,
-				unsigned int count, bool is_uartdm)
+				unsigned int count, bool is_uartdm,
+				bool is_early)
 {
 	unsigned long flags;
 	int i;
@@ -1585,6 +1631,13 @@ static void __msm_console_write(struct uart_port *port, const char *s,
 	bool replaced = false;
 	void __iomem *tf;
 	int locked = 1;
+	struct msm_port *msm_port;
+	struct msm_dma *dma;
+
+	if (!is_early) {
+		msm_port = UART_TO_MSM(port);
+		dma = &msm_port->tx_dma;
+	}
 
 	if (is_uartdm)
 		tf = port->membase + UARTDM_TF;
@@ -1605,6 +1658,15 @@ static void __msm_console_write(struct uart_port *port, const char *s,
 		locked = spin_trylock(&port->lock);
 	else
 		spin_lock(&port->lock);
+
+	/*
+	 * If any TX DMA operation is ongoing in BAM DMA then console write
+	 * can not be used since it uses the FIFO mode.
+	 */
+	if ((!is_early) && (dma->count)) {
+		spin_unlock(&port->lock);
+		return;
+	}
 
 	if (is_uartdm)
 		msm_reset_dm_count(port, count);
@@ -1659,7 +1721,7 @@ static void msm_console_write(struct console *co, const char *s,
 	port = msm_get_port_from_line(co->index);
 	msm_port = UART_TO_MSM(port);
 
-	__msm_console_write(port, s, count, msm_port->is_uartdm);
+	__msm_console_write(port, s, count, msm_port->is_uartdm, false);
 }
 
 static int msm_console_setup(struct console *co, char *options)
@@ -1693,7 +1755,7 @@ msm_serial_early_write(struct console *con, const char *s, unsigned n)
 {
 	struct earlycon_device *dev = con->data;
 
-	__msm_console_write(&dev->port, s, n, false);
+	__msm_console_write(&dev->port, s, n, false, true);
 }
 
 static int __init
@@ -1713,7 +1775,7 @@ msm_serial_early_write_dm(struct console *con, const char *s, unsigned n)
 {
 	struct earlycon_device *dev = con->data;
 
-	__msm_console_write(&dev->port, s, n, true);
+	__msm_console_write(&dev->port, s, n, true, true);
 }
 
 static int __init

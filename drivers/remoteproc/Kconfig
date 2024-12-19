@@ -157,6 +157,22 @@ config QCOM_Q6V5_WCSS
 	  Say y here to support the Qualcomm Peripheral Image Loader for the
 	  Hexagon V5 based WCSS remote processors.
 
+config QCOM_Q6V5_MPD
+	tristate "Qualcomm Hexagon based WCSS Peripheral Image Loader for multipd architecture"
+	depends on OF && ARCH_QCOM
+	depends on QCOM_SMEM
+	depends on RPMSG_QCOM_SMD || (COMPILE_TEST && RPMSG_QCOM_SMD=n)
+	depends on RPMSG_QCOM_GLINK_SMEM || RPMSG_QCOM_GLINK_SMEM=n
+	depends on QCOM_SYSMON || QCOM_SYSMON=n
+	select MFD_SYSCON
+	select QCOM_MDT_LOADER
+	select QCOM_Q6V5_COMMON
+	select QCOM_RPROC_COMMON
+	select QCOM_SCM
+	help
+	  Say y here to support the Qualcomm Peripheral Image Loader for multi
+	  pd model for the Hexagon V5 based WCSS remote processors.
+
 config QCOM_SYSMON
 	tristate "Qualcomm sysmon driver"
 	depends on RPMSG
@@ -214,6 +230,12 @@ config STM32_RPROC
 
 	  This can be either built-in or a loadable module.
 
+config QTI_BT_PIL
+	tristate "QTI BT Peripheral Image Loader"
+	default n
+	help
+	  Say y here to support the Peripheral Image Loader for the QTI
+	  Bluetooth Subsystem.
 endif # REMOTEPROC
 
 endmenu

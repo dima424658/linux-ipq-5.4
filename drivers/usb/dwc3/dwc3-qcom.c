@@ -8,17 +8,23 @@
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/clk.h>
+#include <linux/gpio.h>
 #include <linux/irq.h>
 #include <linux/clk-provider.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
+#if defined(CONFIG_IPQ_DWC3_QTI_EXTCON)
 #include <linux/extcon.h>
+#endif
 #include <linux/of_platform.h>
+#include <linux/of_gpio.h>
 #include <linux/platform_device.h>
 #include <linux/phy/phy.h>
 #include <linux/usb/of.h>
 #include <linux/reset.h>
 #include <linux/iopoll.h>
+#include <linux/regmap.h>
+#include <linux/mfd/syscon.h>
 
 #include "core.h"
 
@@ -66,16 +72,29 @@ struct dwc3_qcom {
 	int			dm_hs_phy_irq;
 	int			ss_phy_irq;
 
+#if defined(CONFIG_IPQ_DWC3_QTI_EXTCON)
 	struct extcon_dev	*edev;
 	struct extcon_dev	*host_edev;
 	struct notifier_block	vbus_nb;
 	struct notifier_block	host_nb;
+
+	bool			vbus_status;
+	bool			id_status;
+	struct work_struct	vbus_work;
+	struct work_struct	host_work;
+	struct workqueue_struct	*dwc3_wq;
+#endif
 
 	const struct dwc3_acpi_pdata *acpi_pdata;
 
 	enum usb_dr_mode	mode;
 	bool			is_suspended;
 	bool			pm_suspended;
+	bool			phy_mux;
+	struct regmap		*phy_mux_map;
+	u32			phy_mux_reg;
+
+	struct gpio_desc *device_power_gpio;
 };
 
 static inline void dwc3_qcom_setbits(void __iomem *base, u32 offset, u32 val)
@@ -105,11 +124,15 @@ static inline void dwc3_qcom_clrbits(void __iomem *base, u32 offset, u32 val)
 static void dwc3_qcom_vbus_override_enable(struct dwc3_qcom *qcom, bool enable)
 {
 	if (enable) {
+		gpiod_set_value(qcom->device_power_gpio, 1);
+
 		dwc3_qcom_setbits(qcom->qscratch_base, QSCRATCH_SS_PHY_CTRL,
 				  LANE0_PWR_PRESENT);
 		dwc3_qcom_setbits(qcom->qscratch_base, QSCRATCH_HS_PHY_CTRL,
 				  UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL);
 	} else {
+		gpiod_set_value(qcom->device_power_gpio, 0);
+
 		dwc3_qcom_clrbits(qcom->qscratch_base, QSCRATCH_SS_PHY_CTRL,
 				  LANE0_PWR_PRESENT);
 		dwc3_qcom_clrbits(qcom->qscratch_base, QSCRATCH_HS_PHY_CTRL,
@@ -117,10 +140,61 @@ static void dwc3_qcom_vbus_override_enable(struct dwc3_qcom *qcom, bool enable)
 	}
 }
 
+#if defined(CONFIG_IPQ_DWC3_QTI_EXTCON)
+static void dwc3_otg_start_peripheral(struct work_struct *w)
+{
+	struct dwc3_qcom *qcom = container_of(w, struct dwc3_qcom, vbus_work);
+	struct dwc3 *dwc = platform_get_drvdata(qcom->dwc3);
+	int ret;
+
+	dwc3_qcom_vbus_overrride_enable(qcom, qcom->vbus_status);
+	if (qcom->vbus_status) {
+		dev_dbg(qcom->dev, "turn on dwc3 gadget\n");
+		dwc3_set_mode(dwc, DWC3_GCTL_PRTCAP_DEVICE);
+		ret = usb_gadget_vbus_connect(&dwc->gadget);
+		if (ret)
+			dev_err(qcom->dev, "%s: vbus connect  failed\n",
+								__func__);
+	} else {
+		dev_dbg(qcom->dev, "turn off dwc3 gadget\n");
+		ret = usb_gadget_vbus_disconnect(&dwc->gadget);
+		if (ret)
+			dev_err(qcom->dev, "%s: vbus disconnect failed\n",
+								__func__);
+	}
+}
+
+static void dwc3_otg_start_host(struct work_struct *w)
+{
+	struct dwc3_qcom *qcom = container_of(w, struct dwc3_qcom, host_work);
+	struct dwc3 *dwc = platform_get_drvdata(qcom->dwc3);
+	int ret;
+
+	dwc3_qcom_vbus_overrride_enable(qcom, qcom->id_status);
+	if (qcom->id_status) {
+		dev_dbg(qcom->dev, "turn on dwc3 host\n");
+		dwc3_set_mode(dwc, DWC3_GCTL_PRTCAP_HOST);
+		ret = dwc3_host_init(dwc);
+		if (ret)
+			dev_err(dwc->dev, "failed to register xHCI device\n");
+
+	} else {
+		dev_dbg(qcom->dev, "turn off dwc3 host\n");
+		dwc3_host_exit(dwc);
+	}
+}
+
+
 static int dwc3_qcom_vbus_notifier(struct notifier_block *nb,
 				   unsigned long event, void *ptr)
 {
 	struct dwc3_qcom *qcom = container_of(nb, struct dwc3_qcom, vbus_nb);
+
+	if (qcom->vbus_status == event)
+		return NOTIFY_DONE;
+
+	qcom->vbus_status = event;
+	queue_work(qcom->dwc3_wq, &qcom->vbus_work);
 
 	/* enable vbus override for device mode */
 	dwc3_qcom_vbus_override_enable(qcom, event);
@@ -133,6 +207,12 @@ static int dwc3_qcom_host_notifier(struct notifier_block *nb,
 				   unsigned long event, void *ptr)
 {
 	struct dwc3_qcom *qcom = container_of(nb, struct dwc3_qcom, host_nb);
+
+	if (qcom->vbus_status == event)
+		return NOTIFY_DONE;
+
+	qcom->vbus_status = event;
+	queue_work(qcom->dwc3_wq, &qcom->vbus_work);
 
 	/* disable vbus override in host mode */
 	dwc3_qcom_vbus_override_enable(qcom, !event);
@@ -189,6 +269,7 @@ static int dwc3_qcom_register_extcon(struct dwc3_qcom *qcom)
 
 	return 0;
 }
+#endif
 
 /* Only usable in contexts where the role can not change. */
 static bool dwc3_qcom_is_host(struct dwc3_qcom *qcom)
@@ -339,9 +420,9 @@ static int dwc3_qcom_get_irq(struct platform_device *pdev,
 	int ret;
 
 	if (np)
-		ret = platform_get_irq_byname(pdev, name);
+		ret = platform_get_irq_byname_optional(pdev, name);
 	else
-		ret = platform_get_irq(pdev, num);
+		ret = platform_get_irq_optional(pdev, num);
 
 	return ret;
 }
@@ -568,6 +649,38 @@ static const struct dwc3_acpi_pdata sdm845_acpi_pdata = {
 	.ss_phy_irq_index = 2
 };
 
+static int dwc3_qcom_phy_sel(struct dwc3_qcom *qcom)
+{
+	struct of_phandle_args args;
+	int ret;
+
+	ret = of_parse_phandle_with_fixed_args(qcom->dev->of_node,
+			"qcom,phy-mux-regs", 1, 0, &args);
+	if (ret) {
+		dev_err(qcom->dev, "failed to parse qcom,phy-mux-regs\n");
+		return ret;
+	}
+
+	qcom->phy_mux_map = syscon_node_to_regmap(args.np);
+	of_node_put(args.np);
+	if (IS_ERR(qcom->phy_mux_map)) {
+		pr_err("phy mux regs map failed:%ld\n",
+						PTR_ERR(qcom->phy_mux_map));
+		return PTR_ERR(qcom->phy_mux_map);
+	}
+
+	qcom->phy_mux_reg = args.args[0];
+	/*usb phy mux sel*/
+	ret = regmap_write(qcom->phy_mux_map, qcom->phy_mux_reg, 0x1);
+	if (ret) {
+		dev_err(qcom->dev,
+			"Not able to configure phy mux selection:%d\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
 static int dwc3_qcom_probe(struct platform_device *pdev)
 {
 	struct device_node	*np = pdev->dev.of_node;
@@ -591,6 +704,25 @@ static int dwc3_qcom_probe(struct platform_device *pdev)
 			return -EINVAL;
 		}
 	}
+
+	qcom->device_power_gpio = devm_gpiod_get_optional(dev, "device-power",
+							  GPIOD_OUT_HIGH);
+
+	qcom->phy_mux = device_property_read_bool(dev,
+				"qcom,multiplexed-phy");
+	if (qcom->phy_mux)
+		dwc3_qcom_phy_sel(qcom);
+
+#if defined(CONFIG_IPQ_DWC3_QTI_EXTCON)
+	INIT_WORK(&qcom->vbus_work, dwc3_otg_start_peripheral);
+	INIT_WORK(&qcom->host_work, dwc3_otg_start_host);
+
+	qcom->dwc3_wq = alloc_ordered_workqueue("dwc3_wq", 0);
+	if (!qcom->dwc3_wq) {
+		pr_err("%s: Unable to create workqueue dwc3_wq\n", __func__);
+		return -ENOMEM;
+	}
+#endif
 
 	qcom->resets = devm_reset_control_array_get_optional_exclusive(dev);
 	if (IS_ERR(qcom->resets)) {
@@ -620,6 +752,11 @@ static int dwc3_qcom_probe(struct platform_device *pdev)
 	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res) {
+		dev_err(&pdev->dev, "failed to get memory resource\n");
+		ret = -ENODEV;
+		goto clk_disable;
+	}
 
 	if (np) {
 		parent_res = res;
@@ -672,10 +809,14 @@ static int dwc3_qcom_probe(struct platform_device *pdev)
 	if (qcom->mode != USB_DR_MODE_HOST)
 		dwc3_qcom_vbus_override_enable(qcom, true);
 
+	gpiod_set_value(qcom->device_power_gpio, 0);
+
+#if defined(CONFIG_IPQ_DWC3_QTI_EXTCON)
 	/* register extcon to override sw_vbus on Vbus change later */
 	ret = dwc3_qcom_register_extcon(qcom);
 	if (ret)
 		goto depopulate;
+#endif
 
 	device_init_wakeup(&pdev->dev, 1);
 	qcom->is_suspended = false;
@@ -698,6 +839,9 @@ clk_disable:
 reset_assert:
 	reset_control_assert(qcom->resets);
 
+#if defined(CONFIG_IPQ_DWC3_QTI_EXTCON)
+	destroy_workqueue(qcom->dwc3_wq);
+#endif
 	return ret;
 }
 
@@ -705,20 +849,36 @@ static int dwc3_qcom_remove(struct platform_device *pdev)
 {
 	struct dwc3_qcom *qcom = platform_get_drvdata(pdev);
 	struct device *dev = &pdev->dev;
-	int i;
+	int i, ret;
 
+#if defined(CONFIG_IPQ_DWC3_QTI_EXTCON)
+	extcon_unregister_notifier(qcom->edev, EXTCON_USB, &qcom->vbus_nb);
+	extcon_unregister_notifier(qcom->host_edev, EXTCON_USB_HOST,
+				   &qcom->host_nb);
+	destroy_workqueue(qcom->dwc3_wq);
+#endif
 	of_platform_depopulate(dev);
-
-	for (i = qcom->num_clocks - 1; i >= 0; i--) {
-		clk_disable_unprepare(qcom->clks[i]);
-		clk_put(qcom->clks[i]);
-	}
-	qcom->num_clocks = 0;
 
 	reset_control_assert(qcom->resets);
 
+	if (qcom->phy_mux) {
+		/*usb phy mux deselection*/
+		ret = regmap_write(qcom->phy_mux_map, qcom->phy_mux_reg,
+					0x0);
+		if (ret)
+			dev_err(qcom->dev,
+			  "Not able to configure phy mux selection:%d\n", ret);
+	}
+
 	pm_runtime_allow(dev);
 	pm_runtime_disable(dev);
+
+	for (i = qcom->num_clocks - 1; i >= 0; i--) {
+		if (!qcom->is_suspended)
+			clk_disable_unprepare(qcom->clks[i]);
+		clk_put(qcom->clks[i]);
+	}
+	qcom->num_clocks = 0;
 
 	return 0;
 }
@@ -772,6 +932,10 @@ static const struct of_device_id dwc3_qcom_of_match[] = {
 	{ .compatible = "qcom,msm8996-dwc3" },
 	{ .compatible = "qcom,msm8998-dwc3" },
 	{ .compatible = "qcom,sdm845-dwc3" },
+	{ .compatible = "qcom,ipq6018-dwc3" },
+	{ .compatible = "qcom,ipq807x-dwc3" },
+	{ .compatible = "qcom,ipq5018-dwc3" },
+	{ .compatible = "qcom,ipq9574-dwc3" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, dwc3_qcom_of_match);

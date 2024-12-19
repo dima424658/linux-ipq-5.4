@@ -27,6 +27,7 @@
 #include <linux/regulator/machine.h>
 #include <linux/module.h>
 
+#include <linux/uaccess.h>
 #define CREATE_TRACE_POINTS
 #include <trace/events/regulator.h>
 
@@ -3881,6 +3882,77 @@ out:
 	return ret;
 }
 
+static int regulator_dev_set_voltage_unlocked(struct regulator_dev *rdev,
+					int min_uV, int max_uV)
+{
+	int ret = 0;
+	int best_supply_uV = 0;
+	int supply_change_uV = 0;
+
+	if (!(rdev->constraints->valid_ops_mask & REGULATOR_CHANGE_VOLTAGE))
+		return ret;
+
+	if (!rdev->desc->ops->set_voltage &&
+		!rdev->desc->ops->set_voltage_sel)
+		return -EINVAL;
+
+	ret = regulator_check_voltage(rdev, &min_uV, &max_uV);
+	if (ret < 0)
+		return ret;
+
+	ret = regulator_check_consumers(rdev, &min_uV, &max_uV, 0);
+	if (ret < 0)
+		return ret;
+
+	if (rdev->supply && (rdev->desc->min_dropout_uV ||
+				!rdev->desc->ops->get_voltage)) {
+		int current_supply_uV;
+		int selector;
+
+		selector = regulator_map_voltage(rdev, min_uV, max_uV);
+		if (selector < 0)
+			return selector;
+
+		best_supply_uV = _regulator_list_voltage(rdev,
+						selector, 0);
+		if (best_supply_uV < 0)
+			return best_supply_uV;
+
+		best_supply_uV += rdev->desc->min_dropout_uV;
+		current_supply_uV = regulator_get_voltage_rdev(rdev->supply->rdev);
+		if (current_supply_uV < 0)
+			return current_supply_uV;
+
+		supply_change_uV = best_supply_uV - current_supply_uV;
+	}
+
+	if (supply_change_uV > 0) {
+		ret = regulator_set_voltage_unlocked(rdev->supply,
+			best_supply_uV, INT_MAX, 0);
+		if (ret) {
+			dev_err(&rdev->dev, "Failed to increase supply voltage: %d\n",
+				ret);
+			return ret;
+		}
+	}
+
+	ret = _regulator_do_set_voltage(rdev, min_uV, max_uV);
+	if (ret < 0)
+		return ret;
+
+	if (supply_change_uV < 0) {
+		ret = regulator_set_voltage_unlocked(rdev->supply,
+				best_supply_uV, INT_MAX, 0);
+		if (ret)
+			dev_warn(&rdev->dev, "Failed to decrease supply voltage: %d\n",
+				ret);
+		/* No need to fail here */
+		ret = 0;
+	}
+
+	return ret;
+}
+
 /**
  * regulator_set_voltage - set regulator output voltage
  * @regulator: regulator source
@@ -4892,11 +4964,81 @@ static void regulator_dev_release(struct device *dev)
 	kfree(rdev);
 }
 
+#ifdef CONFIG_DEBUG_FS
+
+#define MAX_DEBUG_BUF_LEN 32
+
+static ssize_t reg_debug_volt_set(struct file *file, const char __user *buf,
+						size_t count, loff_t *ppos)
+{
+	int filled;
+	int voltage = -1;
+	int voltage_tolerance = -1;
+	char debug_buf[MAX_DEBUG_BUF_LEN];
+
+	if (count >= MAX_DEBUG_BUF_LEN) {
+		pr_err("Error-Input voltage pair string exceeds maximum buffer length\n");
+		return -ENOMEM;
+	}
+
+	if (copy_from_user(debug_buf, buf, count))
+		return -EFAULT;
+	debug_buf[count] = '\0';
+
+	filled = sscanf(debug_buf, "%d %d", &voltage, &voltage_tolerance);
+
+	/* check for voltage and tolerance input */
+	if (filled < 2 || voltage < 0 || voltage_tolerance < 0) {
+		pr_info("Error, correct format: echo \"voltage tolerance\" > voltage\n");
+		return -EINVAL;
+	}
+
+	regulator_lock(file->private_data);
+
+	regulator_dev_set_voltage_unlocked(file->private_data,
+		voltage, (voltage + (voltage_tolerance * voltage) / 100));
+
+	regulator_unlock(file->private_data);
+
+	return count;
+}
+
+static ssize_t reg_debug_volt_get(struct file *file, char __user *buf,
+					size_t count, loff_t *ppos)
+{
+	int voltage, output, rc;
+	char debug_buf[MAX_DEBUG_BUF_LEN];
+
+	regulator_lock(file->private_data);
+
+	voltage = regulator_get_voltage_rdev(file->private_data);
+
+	regulator_unlock(file->private_data);
+
+	output = snprintf(debug_buf, MAX_DEBUG_BUF_LEN - 1, "%d\n", voltage);
+	rc = simple_read_from_buffer(buf, output, ppos,
+					debug_buf, output);
+
+	return rc;
+}
+#endif
+
+static const struct file_operations reg_volt_fops = {
+#ifdef CONFIG_DEBUG_FS
+	.write  = reg_debug_volt_set,
+	.open   = simple_open,
+	.read   = reg_debug_volt_get,
+#endif
+};
+
 static void rdev_init_debugfs(struct regulator_dev *rdev)
 {
 	struct device *parent = rdev->dev.parent;
 	const char *rname = rdev_get_name(rdev);
 	char name[NAME_MAX];
+	struct dentry *err_ptr;
+	const struct regulator_ops *reg_ops = rdev->desc->ops;
+	mode_t mode = 0;
 
 	/* Avoid duplicate debugfs directory names */
 	if (parent && rname == rdev->desc->name) {
@@ -4917,6 +5059,22 @@ static void rdev_init_debugfs(struct regulator_dev *rdev)
 			   &rdev->open_count);
 	debugfs_create_u32("bypass_count", 0444, rdev->debugfs,
 			   &rdev->bypass_count);
+
+	/* Voltage File */
+	if (reg_ops->get_voltage)
+		mode |= S_IRUGO;
+
+	if (reg_ops->set_voltage)
+		mode |= S_IWUSR;
+
+	if (mode) {
+		err_ptr = debugfs_create_file("voltage", mode, rdev->debugfs,
+					rdev, &reg_volt_fops);
+		if (IS_ERR_OR_NULL(err_ptr)) {
+			pr_err("Error-Could not create voltage file\n");
+			return;
+		}
+	}
 }
 
 static int regulator_register_resolve_supply(struct device *dev, void *data)

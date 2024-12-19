@@ -132,6 +132,9 @@
 #define MAX_IATU_IN			256
 #define MAX_IATU_OUT			256
 
+/* Synopsys Vendor specific data */
+#define DW_PCIE_RAS_CAP_ID		0x2
+
 struct pcie_port;
 struct dw_pcie;
 struct dw_pcie_ep;
@@ -163,20 +166,17 @@ struct dw_pcie_host_ops {
 };
 
 struct pcie_port {
+	bool			has_msi_ctrl:1;
 	u8			root_bus_nr;
 	u64			cfg0_base;
 	void __iomem		*va_cfg0_base;
 	u32			cfg0_size;
-	u64			cfg1_base;
-	void __iomem		*va_cfg1_base;
-	u32			cfg1_size;
 	resource_size_t		io_base;
 	phys_addr_t		io_bus_addr;
 	u32			io_size;
 	u64			mem_base;
 	phys_addr_t		mem_bus_addr;
 	u32			mem_size;
-	struct resource		*cfg;
 	struct resource		*io;
 	struct resource		*mem;
 	struct resource		*busn;
@@ -239,6 +239,7 @@ struct dw_pcie_ops {
 	int	(*link_up)(struct dw_pcie *pcie);
 	int	(*start_link)(struct dw_pcie *pcie);
 	void	(*stop_link)(struct dw_pcie *pcie);
+	void	(*ltssm_read)(struct dw_pcie *pcie, u32 *val);
 };
 
 struct dw_pcie {
@@ -248,11 +249,13 @@ struct dw_pcie {
 	/* Used when iatu_unroll_enabled is true */
 	void __iomem		*atu_base;
 	u32			num_viewport;
+	u32			link_retries_count;
 	u8			iatu_unroll_enabled;
 	struct pcie_port	pp;
 	struct dw_pcie_ep	ep;
 	const struct dw_pcie_ops *ops;
 	unsigned int		version;
+	u32			ras_cap_offset;
 };
 
 #define to_dw_pcie_from_pp(port) container_of((port), struct dw_pcie, pp)
@@ -262,6 +265,7 @@ struct dw_pcie {
 
 u8 dw_pcie_find_capability(struct dw_pcie *pci, u8 cap);
 u16 dw_pcie_find_ext_capability(struct dw_pcie *pci, u8 cap);
+u16 dw_pcie_find_vsec_capability(struct dw_pcie *pci, u8 vsec_cap);
 
 int dw_pcie_read(void __iomem *addr, int size, u32 *val);
 int dw_pcie_write(void __iomem *addr, int size, u32 val);
@@ -357,8 +361,6 @@ static inline void dw_pcie_dbi_ro_wr_dis(struct dw_pcie *pci)
 
 #ifdef CONFIG_PCIE_DW_HOST
 irqreturn_t dw_handle_msi_irq(struct pcie_port *pp);
-void dw_pcie_msi_init(struct pcie_port *pp);
-void dw_pcie_free_msi(struct pcie_port *pp);
 void dw_pcie_setup_rc(struct pcie_port *pp);
 int dw_pcie_host_init(struct pcie_port *pp);
 void dw_pcie_host_deinit(struct pcie_port *pp);
@@ -367,14 +369,6 @@ int dw_pcie_allocate_domains(struct pcie_port *pp);
 static inline irqreturn_t dw_handle_msi_irq(struct pcie_port *pp)
 {
 	return IRQ_NONE;
-}
-
-static inline void dw_pcie_msi_init(struct pcie_port *pp)
-{
-}
-
-static inline void dw_pcie_free_msi(struct pcie_port *pp)
-{
 }
 
 static inline void dw_pcie_setup_rc(struct pcie_port *pp)

@@ -224,6 +224,9 @@ struct rtable *rt_dst_alloc(struct net_device *dev,
 			     bool nopolicy, bool noxfrm, bool will_cache);
 struct rtable *rt_dst_clone(struct net_device *dev, struct rtable *rt);
 
+int ip_rt_register_notifier(struct notifier_block *nb);
+int ip_rt_unregister_notifier(struct notifier_block *nb);
+
 struct in_ifaddr;
 void fib_add_ifaddr(struct in_ifaddr *);
 void fib_del_ifaddr(struct in_ifaddr *, struct in_ifaddr *);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2016, Linaro Ltd
+ * Copyright (c) 2020, The Linux Foundation, All rights reserved.
  */
 
 #include <linux/io.h>
@@ -33,18 +34,25 @@
 #define SMEM_GLINK_NATIVE_XPRT_FIFO_0		479
 #define SMEM_GLINK_NATIVE_XPRT_FIFO_1		480
 
-struct glink_smem_pipe {
-	struct qcom_glink_pipe native;
+void smem_panic_handler(void)
+{
+	void *vptr;
+	size_t size;
+	u32 remote_pid = 1;
 
-	__le32 *tail;
-	__le32 *head;
-
-	void *fifo;
-
-	int remote_pid;
-};
-
-#define to_smem_pipe(p) container_of(p, struct glink_smem_pipe, native)
+	vptr = qcom_smem_get(remote_pid, SMEM_GLINK_NATIVE_XPRT_DESCRIPTOR,
+									&size);
+	if (IS_ERR_OR_NULL(vptr) || size != 32) {
+		pr_err("%s Unable to get smem descriptor\n", __func__);
+	} else {
+		pr_info("smem desc phys addr(0x%lx)\n",
+						(uintptr_t)qcom_smem_virt_to_phys(vptr));
+		pr_info("%s tx tail:%d tx head:%d rx tail:%d rx head:%d\n",
+				__func__, readl(vptr+0), readl(vptr+4),
+				readl(vptr+8), readl(vptr+12));
+	}
+}
+EXPORT_SYMBOL(smem_panic_handler);
 
 static size_t glink_smem_rx_avail(struct qcom_glink_pipe *np)
 {
@@ -67,13 +75,18 @@ static size_t glink_smem_rx_avail(struct qcom_glink_pipe *np)
 		pipe->native.length = len;
 	}
 
-	head = le32_to_cpu(*pipe->head);
-	tail = le32_to_cpu(*pipe->tail);
+	head = le32_to_cpu(readl(pipe->head));
+	tail = le32_to_cpu(readl(pipe->tail));
 
 	if (head < tail)
-		return pipe->native.length - tail + head;
+		len = pipe->native.length - tail + head;
 	else
-		return head - tail;
+		len = head - tail;
+
+	if (WARN_ON_ONCE(len > pipe->native.length))
+		len = 0;
+
+	return len;
 }
 
 static void glink_smem_rx_peak(struct qcom_glink_pipe *np,
@@ -83,7 +96,11 @@ static void glink_smem_rx_peak(struct qcom_glink_pipe *np,
 	size_t len;
 	u32 tail;
 
-	tail = le32_to_cpu(*pipe->tail);
+	tail = le32_to_cpu(readl(pipe->tail));
+
+	if (WARN_ON_ONCE(tail > pipe->native.length))
+		return;
+
 	tail += offset;
 	if (tail >= pipe->native.length)
 		tail -= pipe->native.length;
@@ -102,13 +119,14 @@ static void glink_smem_rx_advance(struct qcom_glink_pipe *np,
 	struct glink_smem_pipe *pipe = to_smem_pipe(np);
 	u32 tail;
 
-	tail = le32_to_cpu(*pipe->tail);
+	tail = le32_to_cpu(readl(pipe->tail));
 
 	tail += count;
-	if (tail >= pipe->native.length)
-		tail -= pipe->native.length;
 
-	*pipe->tail = cpu_to_le32(tail);
+	if (tail >= pipe->native.length)
+		tail %= pipe->native.length;
+
+	writel(cpu_to_le32(tail), pipe->tail);
 }
 
 static size_t glink_smem_tx_avail(struct qcom_glink_pipe *np)
@@ -118,8 +136,8 @@ static size_t glink_smem_tx_avail(struct qcom_glink_pipe *np)
 	u32 tail;
 	u32 avail;
 
-	head = le32_to_cpu(*pipe->head);
-	tail = le32_to_cpu(*pipe->tail);
+	head = le32_to_cpu(readl(pipe->head));
+	tail = le32_to_cpu(readl(pipe->tail));
 
 	if (tail <= head)
 		avail = pipe->native.length - head + tail;
@@ -131,6 +149,9 @@ static size_t glink_smem_tx_avail(struct qcom_glink_pipe *np)
 	else
 		avail -= FIFO_FULL_RESERVE + TX_BLOCKED_CMD_RESERVE;
 
+	if (WARN_ON_ONCE(avail > pipe->native.length))
+		avail = 0;
+
 	return avail;
 }
 
@@ -139,6 +160,9 @@ static unsigned int glink_smem_tx_write_one(struct glink_smem_pipe *pipe,
 					    const void *data, size_t count)
 {
 	size_t len;
+
+	if (WARN_ON_ONCE(head > pipe->native.length))
+		return head;
 
 	len = min_t(size_t, count, pipe->native.length - head);
 	if (len)
@@ -161,7 +185,7 @@ static void glink_smem_tx_write(struct qcom_glink_pipe *glink_pipe,
 	struct glink_smem_pipe *pipe = to_smem_pipe(glink_pipe);
 	unsigned int head;
 
-	head = le32_to_cpu(*pipe->head);
+	head = le32_to_cpu(readl(pipe->head));
 
 	head = glink_smem_tx_write_one(pipe, head, hdr, hlen);
 	head = glink_smem_tx_write_one(pipe, head, data, dlen);
@@ -174,7 +198,7 @@ static void glink_smem_tx_write(struct qcom_glink_pipe *glink_pipe,
 	/* Ensure ordering of fifo and head update */
 	wmb();
 
-	*pipe->head = cpu_to_le32(head);
+	writel(cpu_to_le32(head), pipe->head);
 }
 
 static void qcom_glink_smem_release(struct device *dev)

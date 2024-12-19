@@ -26,8 +26,8 @@
  */
 struct vif_device {
 	struct net_device *dev;
-	unsigned long bytes_in, bytes_out;
-	unsigned long pkt_in, pkt_out;
+	unsigned long long bytes_in, bytes_out;
+	unsigned long long pkt_in, pkt_out;
 	unsigned long rate_limit;
 	unsigned char threshold;
 	unsigned short flags;

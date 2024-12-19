@@ -20,6 +20,7 @@
 #include <linux/tick.h>
 #include <linux/pm_qos.h>
 #include <linux/sched/isolation.h>
+#include <linux/mm.h>
 
 #include "base.h"
 
@@ -340,11 +341,20 @@ static ssize_t print_cpu_modalias(struct device *dev,
 
 static int cpu_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
-	char *buf = kzalloc(PAGE_SIZE, GFP_KERNEL);
+	int size = PAGE_SIZE;
+	char *buf = NULL, *tbuf = NULL;
+	unsigned long addr = 0;
+#ifdef CONFIG_SLUB_DEBUG
+	size = PAGE_SIZE+(PAGE_SIZE - 1);
+#endif
+	buf = kzalloc(size, GFP_KERNEL);
 	if (buf) {
+		tbuf = buf;
+		addr = PAGE_ALIGN((unsigned long)buf);
+		buf = (char *)addr;
 		print_cpu_modalias(NULL, NULL, buf);
 		add_uevent_var(env, "MODALIAS=%s", buf);
-		kfree(buf);
+		kfree(tbuf);
 	}
 	return 0;
 }

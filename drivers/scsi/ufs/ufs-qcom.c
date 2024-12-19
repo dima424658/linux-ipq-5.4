@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2013-2016, Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2016, 2020 Linux Foundation. All rights reserved.
  */
 
 #include <linux/acpi.h>
@@ -1414,12 +1414,13 @@ static void ufs_qcom_get_default_testbus_cfg(struct ufs_qcom_host *host)
 	host->testbus.select_minor = 37;
 }
 
-static bool ufs_qcom_testbus_cfg_is_ok(struct ufs_qcom_host *host)
+bool ufs_qcom_testbus_cfg_is_ok(struct ufs_qcom_host *host,
+		u8 select_major)
 {
-	if (host->testbus.select_major >= TSTBUS_MAX) {
+	if (select_major >= TSTBUS_MAX) {
 		dev_err(host->hba->dev,
 			"%s: UFS_CFG1[TEST_BUS_SEL} may not equal 0x%05X\n",
-			__func__, host->testbus.select_major);
+			__func__, select_major);
 		return false;
 	}
 
@@ -1428,16 +1429,16 @@ static bool ufs_qcom_testbus_cfg_is_ok(struct ufs_qcom_host *host)
 
 int ufs_qcom_testbus_config(struct ufs_qcom_host *host)
 {
-	int reg;
-	int offset;
+	int reg = 0;
+	int offset, ret = 0, testbus_sel_offset = 19;
 	u32 mask = TEST_BUS_SUB_SEL_MASK;
+	unsigned long flags;
+	struct ufs_hba *hba;
 
 	if (!host)
 		return -EINVAL;
-
-	if (!ufs_qcom_testbus_cfg_is_ok(host))
-		return -EPERM;
-
+	hba = host->hba;
+	spin_lock_irqsave(hba->host->host_lock, flags);
 	switch (host->testbus.select_major) {
 	case TSTBUS_UAWM:
 		reg = UFS_TEST_BUS_CTRL_0;
@@ -1495,20 +1496,28 @@ int ufs_qcom_testbus_config(struct ufs_qcom_host *host)
 	 */
 	}
 	mask <<= offset;
-	ufshcd_rmwl(host->hba, TEST_BUS_SEL,
-		    (u32)host->testbus.select_major << 19,
+	spin_unlock_irqrestore(hba->host->host_lock, flags);
+	if (reg) {
+		ufshcd_rmwl(host->hba, TEST_BUS_SEL,
+		    (u32)host->testbus.select_major << testbus_sel_offset,
 		    REG_UFS_CFG1);
-	ufshcd_rmwl(host->hba, mask,
+		ufshcd_rmwl(host->hba, mask,
 		    (u32)host->testbus.select_minor << offset,
 		    reg);
+	} else {
+		dev_err(hba->dev, "%s: Problem setting minor\n", __func__);
+		ret = -EINVAL;
+		goto out;
+	}
 	ufs_qcom_enable_test_bus(host);
 	/*
 	 * Make sure the test bus configuration is
 	 * committed before returning.
 	 */
 	mb();
+out:
 
-	return 0;
+	return ret;
 }
 
 static void ufs_qcom_testbus_read(struct ufs_hba *hba)

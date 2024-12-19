@@ -296,11 +296,7 @@ static irqreturn_t exynos_pcie_irq_handler(int irq, void *arg)
 
 static void exynos_pcie_msi_init(struct exynos_pcie *ep)
 {
-	struct dw_pcie *pci = ep->pci;
-	struct pcie_port *pp = &pci->pp;
 	u32 val;
-
-	dw_pcie_msi_init(pp);
 
 	/* enable MSI interrupt */
 	val = exynos_pcie_readl(ep->mem_res->elbi_base, PCIE_IRQ_EN_LEVEL);
@@ -411,14 +407,6 @@ static int __init exynos_add_pcie_port(struct exynos_pcie *ep,
 	if (ret) {
 		dev_err(dev, "failed to request irq\n");
 		return ret;
-	}
-
-	if (IS_ENABLED(CONFIG_PCI_MSI)) {
-		pp->msi_irq = platform_get_irq(pdev, 0);
-		if (pp->msi_irq < 0) {
-			dev_err(dev, "failed to get msi irq\n");
-			return pp->msi_irq;
-		}
 	}
 
 	pp->ops = &exynos_pcie_host_ops;

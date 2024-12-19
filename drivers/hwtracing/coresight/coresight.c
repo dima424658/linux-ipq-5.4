@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2012, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012, 2017-2019 The Linux Foundation. All rights reserved.
  */
 
 #include <linux/kernel.h>
@@ -18,9 +18,11 @@
 #include <linux/of_platform.h>
 #include <linux/delay.h>
 #include <linux/pm_runtime.h>
+#include <linux/notifier.h>
 
 #include "coresight-etm-perf.h"
 #include "coresight-priv.h"
+#include "coresight-common.h"
 
 static DEFINE_MUTEX(coresight_mutex);
 
@@ -54,6 +56,14 @@ static struct list_head *stm_path;
  * it needs to look for another sync sequence.
  */
 const u32 barrier_pkt[4] = {0x7fffffff, 0x7fffffff, 0x7fffffff, 0x7fffffff};
+
+static const struct csr_set_atid_op *csr_set_atid_ops;
+
+void coresight_set_csr_ops(const struct csr_set_atid_op *csr_op)
+{
+	csr_set_atid_ops = csr_op;
+}
+EXPORT_SYMBOL(coresight_set_csr_ops);
 
 static int coresight_id_match(struct device *dev, void *data)
 {
@@ -246,6 +256,7 @@ static void coresight_disable_sink(struct coresight_device *csdev)
 	ret = sink_ops(csdev)->disable(csdev);
 	if (ret)
 		return;
+	csdev->activated = false;
 	csdev->enable = false;
 }
 
@@ -352,6 +363,62 @@ static bool coresight_disable_source(struct coresight_device *csdev)
 	return !csdev->enable;
 }
 
+static struct coresight_device *coresight_get_source(struct list_head *path)
+{
+	struct coresight_device *csdev;
+
+	if (!path)
+		return NULL;
+
+	csdev = list_first_entry(path, struct coresight_node, link)->csdev;
+	if (csdev->type != CORESIGHT_DEV_TYPE_SOURCE)
+		return NULL;
+
+	return csdev;
+}
+
+static int coresight_set_csr_atid(struct list_head *path,
+			struct coresight_device *sink_csdev, bool enable)
+{
+	int i, num, ret = 0;
+	struct coresight_device *src_csdev;
+	u32 *atid;
+
+	src_csdev = coresight_get_source(path);
+	if (!src_csdev) {
+		ret = -EINVAL;
+		return ret;
+	}
+
+	num = of_coresight_get_atid_number(src_csdev);
+	if (num < 0)
+		return num;
+
+	atid = kcalloc(num, sizeof(*atid), GFP_KERNEL);
+	if (!atid)
+		return -ENOMEM;
+
+	ret = of_coresight_get_atid(src_csdev, atid, num);
+	if (ret < 0) {
+		kfree(atid);
+		return ret;
+	}
+
+	if (csr_set_atid_ops) {
+		for (i = 0; i < num; i++) {
+			ret = csr_set_atid_ops->set_atid(sink_csdev, atid[i], enable);
+			if (ret < 0) {
+				kfree(atid);
+				return ret;
+			}
+		}
+	} else
+		ret = -EINVAL;
+
+	kfree(atid);
+	return ret;
+}
+
 /*
  * coresight_disable_path_from : Disable components in the given path beyond
  * @nd in the list. If @nd is NULL, all the components, except the SOURCE are
@@ -383,6 +450,9 @@ static void coresight_disable_path_from(struct list_head *path,
 
 		switch (type) {
 		case CORESIGHT_DEV_TYPE_SINK:
+			if (csdev->type == CORESIGHT_DEV_TYPE_SINK)
+				coresight_set_csr_atid(path, csdev, false);
+
 			coresight_disable_sink(csdev);
 			break;
 		case CORESIGHT_DEV_TYPE_SOURCE:
@@ -443,6 +513,13 @@ int coresight_enable_path(struct list_head *path, u32 mode, void *sink_data)
 			 */
 			if (ret)
 				goto out;
+
+			if (csdev->type == CORESIGHT_DEV_TYPE_SINK) {
+				ret = coresight_set_csr_atid(path, csdev, true);
+				if (ret)
+					dev_dbg(&csdev->dev, "Set csr atid register fail\n");
+			}
+
 			break;
 		case CORESIGHT_DEV_TYPE_SOURCE:
 			/* sources are enabled from either sysFS or Perf */
@@ -662,6 +739,23 @@ out:
 	return 0;
 }
 
+static int coresight_panic_handler(struct notifier_block *this,
+			unsigned long event, void *ptr)
+{
+	struct coresight_device *curr_sink = coresight_get_enabled_sink(false);
+
+	if (curr_sink && curr_sink->enable && sink_ops(curr_sink)->abort) {
+		sink_ops(curr_sink)->abort(curr_sink);
+		curr_sink->enable = false;
+	}
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block panic_nb = {
+	.notifier_call = coresight_panic_handler,
+};
+
 struct list_head *coresight_build_path(struct coresight_device *source,
 				       struct coresight_device *sink)
 {
@@ -859,7 +953,7 @@ out:
 }
 EXPORT_SYMBOL_GPL(coresight_disable);
 
-static ssize_t enable_sink_show(struct device *dev,
+static ssize_t curr_sink_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct coresight_device *csdev = to_coresight_device(dev);
@@ -867,7 +961,7 @@ static ssize_t enable_sink_show(struct device *dev,
 	return scnprintf(buf, PAGE_SIZE, "%u\n", csdev->activated);
 }
 
-static ssize_t enable_sink_store(struct device *dev,
+static ssize_t curr_sink_store(struct device *dev,
 				 struct device_attribute *attr,
 				 const char *buf, size_t size)
 {
@@ -887,9 +981,9 @@ static ssize_t enable_sink_store(struct device *dev,
 	return size;
 
 }
-static DEVICE_ATTR_RW(enable_sink);
+static DEVICE_ATTR_RW(curr_sink);
 
-static ssize_t enable_source_show(struct device *dev,
+static ssize_t enable_show(struct device *dev,
 				  struct device_attribute *attr, char *buf)
 {
 	struct coresight_device *csdev = to_coresight_device(dev);
@@ -897,7 +991,7 @@ static ssize_t enable_source_show(struct device *dev,
 	return scnprintf(buf, PAGE_SIZE, "%u\n", csdev->enable);
 }
 
-static ssize_t enable_source_store(struct device *dev,
+static ssize_t enable_store(struct device *dev,
 				   struct device_attribute *attr,
 				   const char *buf, size_t size)
 {
@@ -914,21 +1008,22 @@ static ssize_t enable_source_store(struct device *dev,
 		if (ret)
 			return ret;
 	} else {
+		atomic_set(csdev->refcnt, 1);
 		coresight_disable(csdev);
 	}
 
 	return size;
 }
-static DEVICE_ATTR_RW(enable_source);
+static DEVICE_ATTR_RW(enable);
 
 static struct attribute *coresight_sink_attrs[] = {
-	&dev_attr_enable_sink.attr,
+	&dev_attr_curr_sink.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(coresight_sink);
 
 static struct attribute *coresight_source_attrs[] = {
-	&dev_attr_enable_source.attr,
+	&dev_attr_enable.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(coresight_source);
@@ -990,6 +1085,10 @@ static int coresight_orphan_match(struct device *dev, void *data)
 	for (i = 0; i < i_csdev->pdata->nr_outport; i++) {
 		conn = &i_csdev->pdata->conns[i];
 
+		/* Skip the port if FW doesn't describe it */
+		if (!conn->child_fwnode)
+			continue;
+
 		/* We have found at least one orphan connection */
 		if (conn->child_dev == NULL) {
 			/* Does it match this newly added device? */
@@ -1029,6 +1128,8 @@ static void coresight_fixup_device_conns(struct coresight_device *csdev)
 		struct coresight_connection *conn = &csdev->pdata->conns[i];
 		struct device *dev = NULL;
 
+		if (!conn->child_fwnode)
+			continue;
 		dev = bus_find_device_by_fwnode(&coresight_bustype, conn->child_fwnode);
 		if (dev) {
 			conn->child_dev = to_coresight_device(dev);
@@ -1061,7 +1162,7 @@ static int coresight_remove_match(struct device *dev, void *data)
 	for (i = 0; i < iterator->pdata->nr_outport; i++) {
 		conn = &iterator->pdata->conns[i];
 
-		if (conn->child_dev == NULL)
+		if (conn->child_dev == NULL || conn->child_fwnode == NULL)
 			continue;
 
 		if (csdev->dev.fwnode == conn->child_fwnode) {
@@ -1149,7 +1250,16 @@ struct bus_type coresight_bustype = {
 
 static int __init coresight_init(void)
 {
-	return bus_register(&coresight_bustype);
+	int ret;
+
+	ret = bus_register(&coresight_bustype);
+	if (ret)
+		return ret;
+
+	ret = atomic_notifier_chain_register(&panic_notifier_list,
+			&panic_nb);
+
+	return ret;
 }
 postcore_initcall(coresight_init);
 
@@ -1331,3 +1441,14 @@ done:
 	return name;
 }
 EXPORT_SYMBOL_GPL(coresight_alloc_device_name);
+
+void coresight_abort(void)
+{
+	struct coresight_device *curr_sink = coresight_get_enabled_sink(false);
+
+	if (curr_sink && curr_sink->enable && sink_ops(curr_sink)->abort) {
+		sink_ops(curr_sink)->abort(curr_sink);
+		curr_sink->enable = false;
+	}
+}
+EXPORT_SYMBOL(coresight_abort);

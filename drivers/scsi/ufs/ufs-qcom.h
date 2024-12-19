@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2015, 2020 The Linux Foundation. All rights reserved.
  */
 
 #ifndef UFS_QCOM_H_
@@ -88,7 +88,7 @@ enum {
 #define QUNIPRO_SEL		0x1
 #define UTP_DBG_RAMS_EN		0x20000
 #define TEST_BUS_EN		BIT(18)
-#define TEST_BUS_SEL		GENMASK(22, 19)
+#define TEST_BUS_SEL		0x780000
 #define UFS_REG_TEST_BUS_EN	BIT(30)
 
 /* bit definitions for REG_UFS_CFG2 register */
@@ -251,6 +251,7 @@ ufs_qcom_get_debug_reg_offset(struct ufs_qcom_host *host, u32 reg)
 #define ufs_qcom_is_link_active(hba) ufshcd_is_link_active(hba)
 #define ufs_qcom_is_link_hibern8(hba) ufshcd_is_link_hibern8(hba)
 
+bool ufs_qcom_testbus_cfg_is_ok(struct ufs_qcom_host *host, u8 select_major);
 int ufs_qcom_testbus_config(struct ufs_qcom_host *host);
 
 static inline bool ufs_qcom_cap_qunipro(struct ufs_qcom_host *host)

@@ -2347,7 +2347,7 @@ static int crypt_ctr_cipher_old(struct dm_target *ti, char *cipher_in, char *key
 				char **ivmode, char **ivopts)
 {
 	struct crypt_config *cc = ti->private;
-	char *tmp, *cipher, *chainmode, *keycount;
+	char *tmp, *cipher, *chainmode, *keycount, *qcengine;
 	char *cipher_api = NULL;
 	int ret = -EINVAL;
 	char dummy;
@@ -2375,6 +2375,11 @@ static int crypt_ctr_cipher_old(struct dm_target *ti, char *cipher_in, char *key
 	cc->key_parts = cc->tfms_count;
 
 	chainmode = strsep(&tmp, "-");
+	if (strnstr(tmp, "qce", sizeof("qce")))
+		qcengine = strsep(&tmp, "-");
+	else
+		qcengine = NULL;
+
 	*ivmode = strsep(&tmp, ":");
 	*ivopts = tmp;
 
@@ -2396,7 +2401,10 @@ static int crypt_ctr_cipher_old(struct dm_target *ti, char *cipher_in, char *key
 	if (!cipher_api)
 		goto bad_mem;
 
-	if (*ivmode && !strcmp(*ivmode, "essiv")) {
+	if (qcengine) {
+		ret = snprintf(cipher_api, CRYPTO_MAX_ALG_NAME,
+			"%s-%s-%s", chainmode, cipher, qcengine);
+	} else if (*ivmode && !strcmp(*ivmode, "essiv")) {
 		if (!*ivopts) {
 			ti->error = "Digest algorithm missing for ESSIV mode";
 			kfree(cipher_api);

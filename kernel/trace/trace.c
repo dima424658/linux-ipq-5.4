@@ -45,6 +45,7 @@
 #include <linux/trace.h>
 #include <linux/sched/clock.h>
 #include <linux/sched/rt.h>
+#include <linux/platform_device.h>
 
 #include "trace.h"
 #include "trace_output.h"
@@ -2700,7 +2701,7 @@ static inline void ftrace_exports_disable(void)
 	static_branch_disable(&ftrace_exports_enabled);
 }
 
-static void ftrace_exports(struct ring_buffer_event *event)
+static void __maybe_unused ftrace_exports(struct ring_buffer_event *event)
 {
 	struct trace_export *export;
 
@@ -2795,11 +2796,147 @@ int unregister_ftrace_export(struct trace_export *export)
 }
 EXPORT_SYMBOL_GPL(unregister_ftrace_export);
 
+#ifdef CONFIG_SRD_TRACE
+
+#include <linux/time.h>
+#include <linux/atomic.h>
+#include <linux/dma-mapping.h>
+
+#define SRD_NUM_ENTRIES		(8 << 10)
+
+#define SRD_WITH_PARENT		0
+#define SRD_WITH_JIFFIES	0
+
+struct srd_record {
+	void		*ip;
+#if SRD_WITH_PARENT
+	void		*parent;
+#endif
+};
+
+struct srd_percpu {
+	uint32_t		index;
+#if SRD_WITH_JIFFIES
+	uint32_t		jiffies;
+#endif
+};
+
+struct silent_reboot_debug {
+	atomic_t		index;
+	struct srd_record	*r;
+	dma_addr_t		r_pa;
+	int			ncpu;
+	struct srd_percpu	cpu[CONFIG_NR_CPUS];
+} *srd;
+
+#define SRD_REC_SIZE_PER_CPU	(SRD_NUM_ENTRIES * sizeof(*srd->r))
+
+dma_addr_t srd_pa;
+struct srd_record *srd_rec[CONFIG_NR_CPUS];
+
+void srd_info_record(unsigned long ip, unsigned long parent_ip)
+{
+	unsigned long flags;
+	struct srd_record *r;
+	int cpu = smp_processor_id();
+	uint32_t index;
+
+	if (!srd || !srd->r)
+		return;
+
+	local_irq_save(flags);
+
+#if SRD_WITH_JIFFIES
+	srd->cpu[cpu].jiffies = jiffies;
+#endif
+	index = srd->cpu[cpu].index++;
+
+	r = srd_rec[cpu] + (index % SRD_NUM_ENTRIES);
+
+	r->ip = (void *)ip;
+#if SRD_WITH_PARENT
+	r->parent = (void *)parent_ip;
+#endif
+
+	local_irq_restore(flags);
+}
+
+#define SRD_PRINT_STR	"srd: 0x%p -> 0x%p 0x%zu\n"		\
+			"ip: 0x%p -> 0x%p 0x%zu\n",		\
+			srd, (void *)srd_pa, 			\
+			sizeof(*srd) / sizeof(uint32_t),	\
+			srd->r, (void *)srd->r_pa,		\
+			(SRD_REC_SIZE_PER_CPU * srd->ncpu) / sizeof(uint32_t)
+static ssize_t
+tracing_srd_read(struct file *filp, char __user *ubuf,
+	       size_t cnt, loff_t *ppos)
+{
+	char str[256];
+	int count;
+
+	if (srd && !*ppos) {
+		count = snprintf(str, sizeof(str), SRD_PRINT_STR);
+		return simple_read_from_buffer(ubuf, cnt, ppos, str, count);
+	} else {
+		return 0;
+	}
+}
+
+static const struct file_operations tracing_srd_fops = {
+	.read		= tracing_srd_read,
+};
+
+
+void srd_buf_init(struct device *dev)
+{
+	int cpu;
+
+	/*
+	 * Would have been ideal to do this in tracer_alloc_buffers.
+	 * However, the dma-map subsystem is not up during early_initcall,
+	 * and we get the following error
+	 * __dma_alloc_remap: not initialised
+	 * Backtrace:
+	 * [<c0012be8>] (dump_backtrace+0x0/0x120) from [<c040fc48>] (dump_stack+0x20/0x24)
+	 *  r6:00001000 r5:c0d7b640 r4:ddf32000 r3:c0881f44
+	 * [<c040fc28>] (dump_stack+0x0/0x24) from [<c001ab30>] (arm_dma_alloc+0x3e0/0x410)
+	 * [<c001a750>] (arm_dma_alloc+0x0/0x410) from [<c071153c>] (tracer_alloc_buffers+0x130/0x2c8)
+	 * [<c071140c>] (tracer_alloc_buffers+0x0/0x2c8) from [<c00087ac>] (do_one_initcall+0x40/0x17c)
+	 *  r7:00000000 r6:c071140c r5:c07368e4 r4:c07368e0
+	 * [<c000876c>] (do_one_initcall+0x0/0x17c) from [<c0700a3c>] (kernel_init+0x6c/0x1cc)
+	 *  r9:00000000 r8:00000000 r7:00000013 r6:c0066f28 r5:c07368e4
+	 * r4:c07368e0
+	 * [<c07009d0>] (kernel_init+0x0/0x1cc) from [<c0066f28>] (do_exit+0x0/0x864)
+	 */
+
+	srd = dma_alloc_coherent(dev, sizeof(*srd), &srd_pa, GFP_KERNEL);
+	if (!srd)
+		return;
+
+	srd->ncpu = CONFIG_NR_CPUS;
+	srd->r = dma_alloc_coherent(dev, SRD_REC_SIZE_PER_CPU * CONFIG_NR_CPUS,
+				&srd->r_pa, GFP_KERNEL);
+	if (!srd->r) {
+		dma_free_coherent(dev, sizeof(*srd), srd, srd_pa);
+		return;
+	}
+
+	for_each_possible_cpu(cpu)
+		srd_rec[cpu] = &srd->r[cpu * SRD_NUM_ENTRIES];
+
+	printk(SRD_PRINT_STR);
+
+}
+#endif /* CONFIG_SRD_TRACE */
+
 void
 trace_function(struct trace_array *tr,
 	       unsigned long ip, unsigned long parent_ip, unsigned long flags,
 	       int pc)
 {
+#ifdef CONFIG_SRD_TRACE
+	srd_info_record(ip, parent_ip);
+#else
 	struct trace_event_call *call = &event_function;
 	struct ring_buffer *buffer = tr->trace_buffer.buffer;
 	struct ring_buffer_event *event;
@@ -2818,6 +2955,7 @@ trace_function(struct trace_array *tr,
 			ftrace_exports(event);
 		__buffer_unlock_commit(buffer, event);
 	}
+#endif /* CONFIG_SRD_TRACE */
 }
 
 #ifdef CONFIG_STACKTRACE
@@ -8892,6 +9030,11 @@ static __init int tracer_init_tracefs(void)
 			&ftrace_update_tot_cnt, &tracing_dyn_info_fops);
 #endif
 
+#ifdef CONFIG_SRD_TRACE
+	trace_create_file("srd", 0444, d_tracer,
+		srd, &tracing_srd_fops);
+#endif /* CONFIG_SRD_TRACE */
+
 	create_trace_instances(d_tracer);
 
 	update_tracer_options(&global_trace);
@@ -9352,6 +9495,34 @@ __init static int clear_boot_tracer(void)
 	return 0;
 }
 
+#ifdef CONFIG_SRD_TRACE
+static int __init srd_probe(struct platform_device *pdev)
+{
+	srd_buf_init(&pdev->dev);
+	return 0;
+}
+
+static const struct of_device_id srd_of_table[] = {
+	{ .compatible = "srd", },
+	{}
+};
+MODULE_DEVICE_TABLE(of, srd_of_table);
+
+static struct platform_driver srd_driver = {
+	.probe = srd_probe,
+	.driver = {
+		.name	= "srd",
+		.of_match_table = srd_of_table,
+	},
+};
+
+static int __init srd_init(void)
+{
+	return platform_driver_register(&srd_driver);
+}
+
+#endif
+
 fs_initcall(tracer_init_tracefs);
 late_initcall_sync(clear_boot_tracer);
 
@@ -9376,4 +9547,9 @@ __init static int tracing_set_default_clock(void)
 	return 0;
 }
 late_initcall_sync(tracing_set_default_clock);
+late_initcall(clear_boot_tracer);
+#endif
+
+#ifdef CONFIG_SRD_TRACE
+device_initcall(srd_init);
 #endif

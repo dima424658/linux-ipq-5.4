@@ -7,6 +7,7 @@
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <linux/rpmsg.h>
+#include <linux/of.h>
 
 #include "qrtr.h"
 
@@ -60,6 +61,7 @@ static int qcom_smd_qrtr_probe(struct rpmsg_device *rpdev)
 {
 	struct qrtr_smd_dev *qdev;
 	int rc;
+	unsigned int net_id;
 
 	qdev = devm_kzalloc(&rpdev->dev, sizeof(*qdev), GFP_KERNEL);
 	if (!qdev)
@@ -69,7 +71,11 @@ static int qcom_smd_qrtr_probe(struct rpmsg_device *rpdev)
 	qdev->dev = &rpdev->dev;
 	qdev->ep.xmit = qcom_smd_qrtr_send;
 
-	rc = qrtr_endpoint_register(&qdev->ep, QRTR_EP_NID_AUTO);
+	rc = of_property_read_u32(rpdev->dev.of_node, "qcom,net-id", &net_id);
+	if (rc < 0)
+		net_id = QRTR_EP_NET_ID_AUTO;
+
+	rc = qrtr_endpoint_register(&qdev->ep, net_id);
 	if (rc)
 		return rc;
 

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2012, 2019 The Linux Foundation. All rights reserved.
  */
 
 #ifndef _CORESIGHT_PRIV_H
@@ -11,6 +11,7 @@
 #include <linux/io.h>
 #include <linux/coresight.h>
 #include <linux/pm_runtime.h>
+#include "coresight-common.h"
 
 /*
  * Coresight management registers (0xf00-0xfcc)
@@ -162,6 +163,14 @@ extern int etm_writel_cp14(u32 off, u32 val);
 static inline int etm_readl_cp14(u32 off, unsigned int *val) { return 0; }
 static inline int etm_writel_cp14(u32 off, u32 val) { return 0; }
 #endif
+
+struct csr_set_atid_op {
+	int (*set_atid)(struct coresight_device *csdev, u32 atid, bool enable);
+};
+
+extern void coresight_set_csr_ops(const struct csr_set_atid_op *csr_op);
+int of_coresight_get_atid(struct coresight_device *src_dev, u32 *atid, int atid_num);
+int of_coresight_get_atid_number(struct coresight_device *csdev);
 
 /*
  * Macros and inline functions to handle CoreSight UCI data and driver

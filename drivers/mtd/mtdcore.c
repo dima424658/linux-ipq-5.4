@@ -27,6 +27,7 @@
 #include <linux/reboot.h>
 #include <linux/leds.h>
 #include <linux/debugfs.h>
+#include <linux/root_dev.h>
 #include <linux/nvmem-provider.h>
 
 #include <linux/mtd/mtd.h>
@@ -35,7 +36,9 @@
 #include "mtdcore.h"
 
 struct backing_dev_info *mtd_bdi;
-
+#ifdef CONFIG_KASAN
+bool nand_device_suspended = false;
+#endif
 #ifdef CONFIG_PM_SLEEP
 
 static int mtd_cls_suspend(struct device *dev)
@@ -432,9 +435,12 @@ static int mtd_reboot_notifier(struct notifier_block *n, unsigned long state,
 			       void *cmd)
 {
 	struct mtd_info *mtd;
-
 	mtd = container_of(n, struct mtd_info, reboot_notifier);
 	mtd->_reboot(mtd);
+#ifdef CONFIG_KASAN
+	nand_device_suspended = true;
+	pr_info("NAND device suspended. Ignoring further read/write requests\n");
+#endif
 
 	return NOTIFY_DONE;
 }
@@ -543,6 +549,7 @@ int mtd_pairing_groups(struct mtd_info *mtd)
 }
 EXPORT_SYMBOL_GPL(mtd_pairing_groups);
 
+#ifdef CONFIG_MTD_SUPPORTS_NVMEM
 static int mtd_nvmem_reg_read(void *priv, unsigned int offset,
 			      void *val, size_t bytes)
 {
@@ -587,6 +594,7 @@ static int mtd_nvmem_add(struct mtd_info *mtd)
 
 	return 0;
 }
+#endif
 
 /**
  *	add_mtd_device - register an MTD device
@@ -678,10 +686,12 @@ int add_mtd_device(struct mtd_info *mtd)
 		goto fail_added;
 	}
 
+#ifdef CONFIG_MTD_SUPPORTS_NVMEM
 	/* Add the nvmem provider */
 	error = mtd_nvmem_add(mtd);
 	if (error)
 		goto fail_nvmem_add;
+#endif
 
 	mtd_debugfs_populate(mtd);
 
@@ -700,10 +710,21 @@ int add_mtd_device(struct mtd_info *mtd)
 	   of this try_ nonsense, and no bitching about it
 	   either. :) */
 	__module_get(THIS_MODULE);
+
+	if (!strcmp(mtd->name, "rootfs") &&
+	    IS_ENABLED(CONFIG_MTD_ROOTFS_ROOT_DEV) &&
+	    ROOT_DEV == 0) {
+		pr_notice("mtd: device %d (%s) set to be root filesystem\n",
+			  mtd->index, mtd->name);
+		ROOT_DEV = MKDEV(MTD_BLOCK_MAJOR, mtd->index);
+	}
+
 	return 0;
 
+#ifdef CONFIG_MTD_SUPPORTS_NVMEM
 fail_nvmem_add:
 	device_unregister(&mtd->dev);
+#endif
 fail_added:
 	of_node_put(mtd_get_of_node(mtd));
 	idr_remove(&mtd_idr, i);
@@ -746,9 +767,11 @@ int del_mtd_device(struct mtd_info *mtd)
 	} else {
 		debugfs_remove_recursive(mtd->dbg.dfs_dir);
 
+#ifdef CONFIG_MTD_SUPPORTS_NVMEM
 		/* Try to remove the NVMEM provider */
 		if (mtd->nvmem)
 			nvmem_unregister(mtd->nvmem);
+#endif
 
 		device_unregister(&mtd->dev);
 
@@ -1043,6 +1066,44 @@ out_unlock:
 	return ERR_PTR(err);
 }
 EXPORT_SYMBOL_GPL(get_mtd_device_nm);
+
+/**
+ *	get_mtd_device_by_node - obtain a validated handle for an MTD device
+ *	by of_node
+ *	@of_node: OF node of MTD device to open
+ *
+ *	This function returns MTD device description structure in case of
+ *	success and an error code in case of failure.
+ */
+struct mtd_info *get_mtd_device_by_node(const struct device_node *of_node)
+{
+	int err = -ENODEV;
+	struct mtd_info *mtd = NULL, *other;
+
+	mutex_lock(&mtd_table_mutex);
+
+	mtd_for_each_device(other) {
+		if (of_node == other->dev.of_node) {
+			mtd = other;
+			break;
+		}
+	}
+
+	if (!mtd)
+		goto out_unlock;
+
+	err = __get_mtd_device(mtd);
+	if (err)
+		goto out_unlock;
+
+	mutex_unlock(&mtd_table_mutex);
+	return mtd;
+
+out_unlock:
+	mutex_unlock(&mtd_table_mutex);
+	return ERR_PTR(err);
+}
+EXPORT_SYMBOL_GPL(get_mtd_device_by_node);
 
 void put_mtd_device(struct mtd_info *mtd)
 {

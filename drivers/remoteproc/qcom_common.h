@@ -60,4 +60,5 @@ static inline void qcom_remove_sysmon_subdev(struct qcom_sysmon *sysmon)
 }
 #endif
 
+u8 qcom_get_pd_asid(struct device_node *node);
 #endif

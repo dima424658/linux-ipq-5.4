@@ -314,12 +314,10 @@ static int uniphier_pcie_host_init(struct pcie_port *pp)
 	uniphier_pcie_irq_enable(priv);
 
 	dw_pcie_setup_rc(pp);
+
 	ret = uniphier_pcie_establish_link(pci);
 	if (ret)
 		return ret;
-
-	if (IS_ENABLED(CONFIG_PCI_MSI))
-		dw_pcie_msi_init(pp);
 
 	return 0;
 }
@@ -337,12 +335,6 @@ static int uniphier_add_pcie_port(struct uniphier_pcie_priv *priv,
 	int ret;
 
 	pp->ops = &uniphier_pcie_host_ops;
-
-	if (IS_ENABLED(CONFIG_PCI_MSI)) {
-		pp->msi_irq = platform_get_irq_byname(pdev, "msi");
-		if (pp->msi_irq < 0)
-			return pp->msi_irq;
-	}
 
 	ret = dw_pcie_host_init(pp);
 	if (ret) {

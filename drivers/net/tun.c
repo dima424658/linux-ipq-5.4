@@ -222,6 +222,8 @@ struct tun_struct {
 	kgid_t			group;
 
 	struct net_device	*dev;
+	struct rtnl_link_stats64 stats;
+	spinlock_t stats64_lock;	/* protects statistics counters */
 	netdev_features_t	set_features;
 #define TUN_USER_FEATURES (NETIF_F_HW_CSUM|NETIF_F_TSO_ECN|NETIF_F_TSO| \
 			  NETIF_F_TSO6)
@@ -254,6 +256,8 @@ struct tun_struct {
 	struct file *file;
 	struct ifreq *ifr;
 };
+
+static tun_get_offload_stats_t tun_get_offload_stats_cb;
 
 struct veth {
 	__be16 h_vlan_proto;
@@ -1060,6 +1064,7 @@ static int tun_net_init(struct net_device *dev)
 	dev->vlan_features = dev->features &
 			     ~(NETIF_F_HW_VLAN_CTAG_TX |
 			       NETIF_F_HW_VLAN_STAG_TX);
+	dev->priv_flags_ext |= IFF_EXT_TUN_TAP;
 
 	tun->flags = (tun->flags & ~TUN_FEATURES) |
 		      (ifr->ifr_flags & TUN_FEATURES);
@@ -1234,6 +1239,13 @@ tun_net_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
 	struct tun_struct *tun = netdev_priv(dev);
 	struct tun_pcpu_stats *p;
 	int i;
+
+	memset(stats, 0, sizeof(struct rtnl_link_stats64));
+
+	spin_lock(&tun->stats64_lock);
+	if (tun_get_offload_stats_cb)
+		tun_get_offload_stats_cb(dev, stats);
+	spin_unlock(&tun->stats64_lock);
 
 	for_each_possible_cpu(i) {
 		u64 rxpackets, rxbytes, txpackets, txbytes;
@@ -3835,6 +3847,21 @@ struct ptr_ring *tun_get_tx_ring(struct file *file)
 	return &tfile->tx_ring;
 }
 EXPORT_SYMBOL_GPL(tun_get_tx_ring);
+
+/* Register tun offload statistics callback */
+void tun_register_offload_stats_callback(tun_get_offload_stats_t stats_cb)
+{
+	BUG_ON(tun_get_offload_stats_cb);
+	rcu_assign_pointer(tun_get_offload_stats_cb, stats_cb);
+}
+EXPORT_SYMBOL(tun_register_offload_stats_callback);
+
+/* Unregister tun offload statistics callback */
+void tun_unregister_offload_stats_callback(void)
+{
+	rcu_assign_pointer(tun_get_offload_stats_cb, NULL);
+}
+EXPORT_SYMBOL(tun_unregister_offload_stats_callback);
 
 module_init(tun_init);
 module_exit(tun_cleanup);

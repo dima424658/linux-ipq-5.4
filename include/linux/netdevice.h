@@ -138,8 +138,8 @@ static inline bool dev_xmit_complete(int rc)
 
 #if defined(CONFIG_HYPERV_NET)
 # define LL_MAX_HEADER 128
-#elif defined(CONFIG_WLAN) || IS_ENABLED(CONFIG_AX25)
-# if defined(CONFIG_MAC80211_MESH)
+#elif defined(CONFIG_WLAN) || IS_ENABLED(CONFIG_AX25) || 1
+# if defined(CONFIG_MAC80211_MESH) || 1
 #  define LL_MAX_HEADER 128
 # else
 #  define LL_MAX_HEADER 96
@@ -192,7 +192,6 @@ struct net_device_stats {
 	NET_DEV_STAT(tx_compressed);
 };
 #undef NET_DEV_STAT
-
 
 #include <linux/cache.h>
 #include <linux/skbuff.h>
@@ -297,7 +296,6 @@ enum netdev_state_t {
 	__LINK_STATE_DORMANT,
 };
 
-
 /*
  * This structure holds boot-time configured netdevice settings. They
  * are then used in the device probing.
@@ -349,6 +347,7 @@ struct napi_struct {
 	struct list_head	dev_list;
 	struct hlist_node	napi_hash_node;
 	unsigned int		napi_id;
+	struct work_struct	work;
 };
 
 enum {
@@ -359,6 +358,7 @@ enum {
 	NAPI_STATE_HASHED,	/* In NAPI hash (busy polling possible) */
 	NAPI_STATE_NO_BUSY_POLL,/* Do not add in napi_hash, no busy polling */
 	NAPI_STATE_IN_BUSY_POLL,/* sk_busy_loop() owns this NAPI */
+	NAPI_STATE_THREADED,	/* Use threaded NAPI */
 };
 
 enum {
@@ -369,6 +369,7 @@ enum {
 	NAPIF_STATE_HASHED	 = BIT(NAPI_STATE_HASHED),
 	NAPIF_STATE_NO_BUSY_POLL = BIT(NAPI_STATE_NO_BUSY_POLL),
 	NAPIF_STATE_IN_BUSY_POLL = BIT(NAPI_STATE_IN_BUSY_POLL),
+	NAPIF_STATE_THREADED	 = BIT(NAPI_STATE_THREADED),
 };
 
 enum gro_result {
@@ -939,6 +940,13 @@ struct dev_ifalias {
 struct devlink;
 struct tlsdev_ops;
 
+struct flow_offload;
+struct flow_offload_hw_path;
+
+enum flow_offload_type {
+	FLOW_OFFLOAD_ADD	= 0,
+	FLOW_OFFLOAD_DEL,
+};
 
 /*
  * This structure defines the management hooks for network devices.
@@ -1171,6 +1179,17 @@ struct tlsdev_ops;
  *			     int nlflags)
  * int (*ndo_bridge_dellink)(struct net_device *dev, struct nlmsghdr *nlh,
  *			     u16 flags);
+ *
+ * int (*ndo_flow_offload_check)(struct flow_offload_hw_path *path);
+ *	For virtual devices like bridges, vlan, and pppoe, fill in the
+ *	underlying network device that can be used for offloading connections.
+ *	Return an error if offloading is not supported.
+ *
+ * int (*ndo_flow_offload)(enum flow_offload_type type,
+ *			   struct flow_offload *flow,
+ *			   struct flow_offload_hw_path *src,
+ *			   struct flow_offload_hw_path *dest);
+ *	Adds/deletes flow entry to/from net device flowtable.
  *
  * int (*ndo_change_carrier)(struct net_device *dev, bool new_carrier);
  *	Called to change device carrier. Soft-devices (like dummy, team, etc)
@@ -1419,6 +1438,11 @@ struct net_device_ops {
 	int			(*ndo_bridge_dellink)(struct net_device *dev,
 						      struct nlmsghdr *nlh,
 						      u16 flags);
+	int			(*ndo_flow_offload_check)(struct flow_offload_hw_path *path);
+	int			(*ndo_flow_offload)(enum flow_offload_type type,
+						    struct flow_offload *flow,
+						    struct flow_offload_hw_path *src,
+						    struct flow_offload_hw_path *dest);
 	int			(*ndo_change_carrier)(struct net_device *dev,
 						      bool new_carrier);
 	int			(*ndo_get_phys_port_id)(struct net_device *dev,
@@ -1534,6 +1558,36 @@ enum netdev_priv_flags {
 	IFF_FAILOVER_SLAVE		= 1<<28,
 	IFF_L3MDEV_RX_HANDLER		= 1<<29,
 	IFF_LIVE_RENAME_OK		= 1<<30,
+	IFF_NO_IP_ALIGN			= 1<<31,
+};
+
+/**
+ * enum netdev_priv_flags_ext - &struct net_device priv_flags_ext
+ *
+ * These flags are used to check for device type and can be
+ * set and used by the drivers
+ *
+ * @IFF_EXT_TUN_TAP: device is a TUN/TAP device
+ * @IFF_EXT_PPP_L2TPV2: device is a L2TPV2 device
+ * @IFF_EXT_PPP_L2TPV3: device is a L2TPV3 PPP device
+ * @IFF_EXT_PPP_PPTP: device is a PPTP device
+ * @IFF_EXT_GRE_V4_TAP: device is a GRE IPv4 TAP device
+ * @IFF_EXT_GRE_V6_TAP: device is a GRE IPv6 TAP device
+ * @IFF_EXT_IFB: device is an IFB device
+ * @IFF_EXT_MAPT: device is an MAPT device
+ * @IFF_EXT_L2TPV3: device is a L2TPV3 Ethernet device
+ */
+enum netdev_priv_flags_ext {
+	IFF_EXT_TUN_TAP			= 1<<0,
+	IFF_EXT_PPP_L2TPV2		= 1<<1,
+	IFF_EXT_PPP_L2TPV3		= 1<<2,
+	IFF_EXT_PPP_PPTP		= 1<<3,
+	IFF_EXT_GRE_V4_TAP		= 1<<4,
+	IFF_EXT_GRE_V6_TAP		= 1<<5,
+	IFF_EXT_IFB				= 1<<6,
+	IFF_EXT_MAPT			= 1<<7,
+	IFF_EXT_HW_NO_OFFLOAD		= 1<<8,
+	IFF_EXT_ETH_L2TPV3		= 1<<9,
 };
 
 #define IFF_802_1Q_VLAN			IFF_802_1Q_VLAN
@@ -1566,6 +1620,7 @@ enum netdev_priv_flags {
 #define IFF_FAILOVER_SLAVE		IFF_FAILOVER_SLAVE
 #define IFF_L3MDEV_RX_HANDLER		IFF_L3MDEV_RX_HANDLER
 #define IFF_LIVE_RENAME_OK		IFF_LIVE_RENAME_OK
+#define IFF_NO_IP_ALIGN			IFF_NO_IP_ALIGN
 
 /* Specifies the type of the struct net_device::ml_priv pointer */
 enum netdev_ml_priv_type {
@@ -1645,6 +1700,8 @@ enum netdev_ml_priv_type {
  *	@flags:		Interface flags (a la BSD)
  *	@priv_flags:	Like 'flags' but invisible to userspace,
  *			see if.h for the definitions
+ *	@priv_flags_ext:	Extension for 'priv_flags'
+ *
  *	@gflags:	Global flags ( kept as legacy )
  *	@padded:	How much padding added by alloc_netdev()
  *	@operstate:	RFC2863 operstate
@@ -1754,6 +1811,9 @@ enum netdev_ml_priv_type {
  * 	@tstats:	Tunnel statistics
  * 	@dstats:	Dummy statistics
  * 	@vstats:	Virtual ethernet statistics
+ *
+ *	@sawf_flags:	Service-aware Wi-Fi flags
+ *	@sawf_stats:	Service-aware Wi-Fi latency statistics.
  *
  *	@garp_port:	GARP
  *	@mrp_port:	MRP
@@ -1873,10 +1933,16 @@ struct net_device {
 	const struct tlsdev_ops *tlsdev_ops;
 #endif
 
+#ifdef CONFIG_ETHERNET_PACKET_MANGLE
+	void (*eth_mangle_rx)(struct net_device *dev, struct sk_buff *skb);
+	struct sk_buff *(*eth_mangle_tx)(struct net_device *dev, struct sk_buff *skb);
+#endif
+
 	const struct header_ops *header_ops;
 
 	unsigned int		flags;
 	unsigned int		priv_flags;
+	unsigned int		priv_flags_ext;
 
 	unsigned short		gflags;
 	unsigned short		padded;
@@ -1918,12 +1984,13 @@ struct net_device {
 	struct netdev_hw_addr_list	mc;
 	struct netdev_hw_addr_list	dev_addrs;
 
+	unsigned char		local_addr_mask[MAX_ADDR_LEN];
+
 #ifdef CONFIG_SYSFS
 	struct kset		*queues_kset;
 #endif
 	unsigned int		promiscuity;
 	unsigned int		allmulti;
-
 
 	/* Protocol-specific pointers */
 
@@ -1948,6 +2015,10 @@ struct net_device {
 	struct wpan_dev		*ieee802154_ptr;
 #if IS_ENABLED(CONFIG_MPLS_ROUTING)
 	struct mpls_dev __rcu	*mpls_ptr;
+#endif
+
+#ifdef CONFIG_ETHERNET_PACKET_MANGLE
+	void			*phy_ptr; /* PHY device specific data */
 #endif
 
 /*
@@ -2042,6 +2113,9 @@ struct net_device {
 		struct pcpu_sw_netstats __percpu	*tstats;
 		struct pcpu_dstats __percpu		*dstats;
 	};
+
+	uint16_t				sawf_flags;
+	struct pcpu_sawf_stats __percpu		*sawf_stats;
 
 #if IS_ENABLED(CONFIG_GARP)
 	struct garp_port __rcu	*garp_port;
@@ -2263,6 +2337,26 @@ void netif_napi_add(struct net_device *dev, struct napi_struct *napi,
 		    int (*poll)(struct napi_struct *, int), int weight);
 
 /**
+ *	netif_threaded_napi_add - initialize a NAPI context
+ *	@dev:  network device
+ *	@napi: NAPI context
+ *	@poll: polling function
+ *	@weight: default weight
+ *
+ * This variant of netif_napi_add() should be used from drivers using NAPI
+ * with CPU intensive poll functions.
+ * This will schedule polling from a high priority workqueue
+ */
+static inline void netif_threaded_napi_add(struct net_device *dev,
+					   struct napi_struct *napi,
+					   int (*poll)(struct napi_struct *, int),
+					   int weight)
+{
+	set_bit(NAPI_STATE_THREADED, &napi->state);
+	netif_napi_add(dev, napi, poll, weight);
+}
+
+/**
  *	netif_tx_napi_add - initialize a NAPI context
  *	@dev:  network device
  *	@napi: NAPI context
@@ -2440,6 +2534,28 @@ struct pcpu_lstats {
 	struct u64_stats_sync syncp;
 } __aligned(2 * sizeof(u64));
 
+#define NETDEV_SAWF_HIST_BASE_US	1	/* Number of microseconds represented by bucket 0. */
+#define NETDEV_SAWF_DELAY_BUCKETS	8	/* Number of buckets in latency histogram. */
+#define NETDEV_SAWF_FLAG_ENABLED	0x1	/* Flag to enable SAWF features for netdevice. */
+#define NETDEV_SAWF_FLAG_RX_LAT		0x2	/* Flag to enable Rx hardware latency. */
+#define NETDEV_SAWF_FLAG_TX_LAT		0X4	/* Flag to enable Tx hardware latency. */
+#define NETDEV_SAWF_FLAG_DEBUG		0X8	/* Flag to enable debug service class latency. */
+#define NETDEV_SAWF_FLAG_DEBUG_SHIFT	8	/* Offset of debug service class ID. */
+#define NETDEV_SAWF_FLAG_DEBUG_MASK	0XFF00	/* Mask of debug service class ID. */
+#define NETDEV_SAWF_SID_MAX		256	/* Number of valid service class IDs. */
+
+struct pcpu_sawf_stats {
+	u64	total_delay[NETDEV_SAWF_SID_MAX];	/* Total delay in milliseconds */
+	u64	delay[NETDEV_SAWF_SID_MAX][NETDEV_SAWF_DELAY_BUCKETS];		/* Delay histogram; 8 bins over 256 potential service classes. */
+	u64	tx_packets[NETDEV_SAWF_SID_MAX];	/* Packets sent per service class. */
+	u64	tx_bytes[NETDEV_SAWF_SID_MAX];		/* Bytes sent per service class. */
+	u32	debug_lat_max;		/* Maximum latency for specified debug service class. */
+	u32	debug_lat_min;		/* Minimum measured latency for specified debug service class. */
+	u32	debug_lat_ewma;		/* Exponential weighted moving average latency for specified debug service class. */
+	u32	debug_lat_last;		/* Most recent latency for specified debug service class. */
+	struct u64_stats_sync	syncp;
+};
+
 #define __netdev_alloc_pcpu_stats(type, gfp)				\
 ({									\
 	typeof(type) __percpu *pcpu_stats = alloc_percpu_gfp(type, gfp);\
@@ -2530,6 +2646,8 @@ enum netdev_cmd {
 	NETDEV_CVLAN_FILTER_DROP_INFO,
 	NETDEV_SVLAN_FILTER_PUSH_INFO,
 	NETDEV_SVLAN_FILTER_DROP_INFO,
+	NETDEV_BR_JOIN,
+	NETDEV_BR_LEAVE,
 };
 const char *netdev_cmd_to_name(enum netdev_cmd cmd);
 
@@ -2591,7 +2709,6 @@ netdev_notifier_info_to_extack(const struct netdev_notifier_info *info)
 }
 
 int call_netdevice_notifiers(unsigned long val, struct net_device *dev);
-
 
 extern rwlock_t				dev_base_lock;		/* Device list lock */
 
@@ -2675,6 +2792,10 @@ u16 dev_pick_tx_zero(struct net_device *dev, struct sk_buff *skb,
 u16 dev_pick_tx_cpu_id(struct net_device *dev, struct sk_buff *skb,
 		       struct net_device *sb_dev);
 int dev_queue_xmit(struct sk_buff *skb);
+bool dev_fast_xmit_vp(struct sk_buff *skb, struct net_device *dev);
+bool dev_fast_xmit(struct sk_buff *skb, struct net_device *dev,
+		   netdev_features_t features);
+bool dev_fast_xmit_qdisc(struct sk_buff *skb, struct net_device *top_qdisc_dev, struct net_device *bottom_dev);
 int dev_queue_xmit_accel(struct sk_buff *skb, struct net_device *sb_dev);
 int dev_direct_xmit(struct sk_buff *skb, u16 queue_id);
 int register_netdevice(struct net_device *dev);
@@ -2698,6 +2819,16 @@ struct net_device *dev_get_by_napi_id(unsigned int napi_id);
 int netdev_get_name(struct net *net, char *name, int ifindex);
 int dev_restart(struct net_device *dev);
 int skb_gro_receive(struct sk_buff *p, struct sk_buff *skb);
+
+bool netdev_sawf_deinit(struct net_device *dev);
+bool netdev_sawf_init(struct net_device *dev, uint16_t mode);
+bool netdev_sawf_flags_update(struct net_device *dev, uint16_t mode);
+bool netdev_sawf_enable(struct net_device *dev);
+bool netdev_sawf_disable(struct net_device *dev);
+bool netdev_sawf_debug_set(struct net_device *dev, uint8_t sid);
+bool netdev_sawf_debug_unset(struct net_device *dev);
+bool netdev_sawf_debug_get(struct net_device *dev, uint8_t *sid, uint32_t *max, uint32_t *min, uint32_t *avg, uint32_t *last);
+bool netdev_sawf_lat_get(struct net_device *dev, uint8_t sid, uint64_t *hist, uint64_t *avg);
 
 static inline unsigned int skb_gro_offset(const struct sk_buff *skb)
 {
@@ -3874,7 +4005,6 @@ static inline bool netif_dormant(const struct net_device *dev)
 	return test_bit(__LINK_STATE_DORMANT, &dev->state);
 }
 
-
 /**
  *	netif_oper_up - test if device is operational
  *	@dev: network device
@@ -4207,6 +4337,15 @@ void dev_uc_flush(struct net_device *dev);
 void dev_uc_init(struct net_device *dev);
 
 /**
+ *  ifb_update_offload_stats - Update the IFB interface stats
+ *  @dev: IFB device to update the stats
+ *  @offload_stats: per CPU stats structure
+ *
+ *  Allows update of IFB stats when flows are offloaded to an accelerator.
+ **/
+void ifb_update_offload_stats(struct net_device *dev, struct pcpu_sw_netstats *offload_stats);
+
+/**
  *  __dev_uc_sync - Synchonize device's unicast list
  *  @dev:  device to sync
  *  @sync: function to call if address should be added
@@ -4296,6 +4435,8 @@ struct rtnl_link_stats64 *dev_get_stats(struct net_device *dev,
 					struct rtnl_link_stats64 *storage);
 void netdev_stats_to_stats64(struct rtnl_link_stats64 *stats64,
 			     const struct net_device_stats *netdev_stats);
+void dev_fetch_sw_netstats(struct rtnl_link_stats64 *s,
+			   const struct pcpu_sw_netstats __percpu *netstats);
 
 extern int		netdev_max_backlog;
 extern int		netdev_tstamp_prequeue;
@@ -4483,12 +4624,82 @@ static inline bool netdev_xmit_more(void)
 	return __this_cpu_read(softnet_data.xmit.more);
 }
 
+static inline bool netdev_check_sawf_debug_match(struct net_device *dev, uint8_t sid)
+{
+	return (dev->sawf_flags & NETDEV_SAWF_FLAG_DEBUG) && ((dev->sawf_flags >> NETDEV_SAWF_FLAG_DEBUG_SHIFT) == sid);
+}
+
+static inline void netdev_sawf_latency_record(struct sk_buff *skb, struct net_device *dev)
+{
+	struct pcpu_sawf_stats *sawf_stats;
+	int64_t lat;
+	uint8_t sid;
+	int bucket;
+
+	/*
+	 * Return if latency does not need to be recorded.
+	 */
+	if ((dev->sawf_flags & (NETDEV_SAWF_FLAG_ENABLED | NETDEV_SAWF_FLAG_TX_LAT)) != NETDEV_SAWF_FLAG_ENABLED) {
+		return;
+	}
+
+	sawf_stats = this_cpu_ptr(dev->sawf_stats);
+	if (!sawf_stats) {
+		return;
+	}
+
+
+	if (SKB_GET_SAWF_TAG(skb->mark) != SKB_SAWF_VALID_TAG) {
+		return;
+	}
+
+	if (!skb->tstamp) {
+		return;
+	}
+
+	lat = ktime_to_ns(net_timedelta(skb->tstamp));
+
+	sid = SKB_GET_SAWF_SERVICE_CLASS(skb->mark);
+
+	/*
+	 * Latency is divided by 1000 to convert from nanoseconds to microseconds.
+	 */
+	bucket = fls(div64_s64(lat, (1000 * NETDEV_SAWF_HIST_BASE_US))) - 1;
+	if (bucket < 0) {
+		bucket = 0;
+	} else if (bucket >= NETDEV_SAWF_DELAY_BUCKETS) {
+		bucket = NETDEV_SAWF_DELAY_BUCKETS - 1;
+	}
+
+	u64_stats_update_begin(&sawf_stats->syncp);
+	sawf_stats->delay[sid][bucket]++;
+	sawf_stats->total_delay[sid] += lat;
+	sawf_stats->tx_packets[sid]++;
+	sawf_stats->tx_bytes[sid] += skb->len;
+	u64_stats_update_end(&sawf_stats->syncp);
+
+	if (!netdev_check_sawf_debug_match(dev, sid)) {
+		return;
+	}
+
+	sawf_stats->debug_lat_last = lat;
+	sawf_stats->debug_lat_ewma = sawf_stats->debug_lat_ewma - (sawf_stats->debug_lat_ewma >> 8) + (lat >> 8);
+
+	if (lat > sawf_stats->debug_lat_max) {
+		sawf_stats->debug_lat_max = lat;
+	}
+
+	if (lat < sawf_stats->debug_lat_min || sawf_stats->debug_lat_min == 0) {
+		sawf_stats->debug_lat_min = lat;
+	}
+}
+
 static inline netdev_tx_t netdev_start_xmit(struct sk_buff *skb, struct net_device *dev,
 					    struct netdev_queue *txq, bool more)
 {
 	const struct net_device_ops *ops = dev->netdev_ops;
 	netdev_tx_t rc;
-
+	netdev_sawf_latency_record(skb, dev);
 	rc = __netdev_start_xmit(ops, skb, dev, more);
 	if (rc == NETDEV_TX_OK)
 		txq_trans_update(txq);
@@ -4718,6 +4929,11 @@ static inline bool netif_is_failover(const struct net_device *dev)
 static inline bool netif_is_failover_slave(const struct net_device *dev)
 {
 	return dev->priv_flags & IFF_FAILOVER_SLAVE;
+}
+
+static inline bool netif_is_ifb_dev(const struct net_device *dev)
+{
+	return dev->priv_flags_ext & IFF_EXT_IFB;
 }
 
 /* This device needs to keep skb dst for qdisc enqueue or ndo_start_xmit() */

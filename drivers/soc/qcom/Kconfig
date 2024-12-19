@@ -71,9 +71,49 @@ config QCOM_SDM845_LLCC
 	  data required to configure LLCC so that clients can start using the
 	  LLCC slices.
 
+config QCOM_SOC_NETSTANDBY
+	bool "Qualcomm Technologies, Inc. SoC network standby driver"
+	depends on ARCH_QCOM
+	help
+	  SoC network standby driver for ErP support
+
+config IPQ_REG_UPDATE
+	bool "QTI, Subsystem register update driver"
+	depends on ARCH_QCOM
+	help
+	  Generic driver to configure required registers
+
+config IPQ_SUBSYSTEM_RAMDUMP
+	bool "QTI, Subsystem ramdump driver"
+	depends on ARCH_QCOM
+	help
+	  QTI subsystem ramdump driver exposes APIs for the subsystem
+	  to enable ramdump collection.
+
+config IPQ_SUBSYSTEM_RESTART_TEST
+	tristate "IPQ SSR test module"
+	depends on QCOM_Q6V5_WCSS || QCOM_Q6V5_MPD
+	help
+	 This option enables the IPQ SSR test module.
+
 config QCOM_MDT_LOADER
 	tristate
 	select QCOM_SCM
+
+config QCA_MINIDUMP
+	bool "QCA minidump feature"
+	depends on QCOM_WDT && KALLSYMS
+	help
+	 Say Y here to include QCA minidump feature.
+	 This feature enables dumping desired regions
+	 instead of dumping whole DDR up on system crash.
+	 Currently supported on IPQ807x /IPQ60xx targets.
+
+config QCA_MINIDUMP_DEBUG
+	bool "QCA minidump Debug feature"
+	depends on QCA_MINIDUMP
+	help
+	 Say Y here to include QCA minidump Debug logging.
 
 config QCOM_PM
 	bool "Qualcomm Power Management"
@@ -139,6 +179,49 @@ config QCOM_SMEM
 	  The driver provides an interface to items in a heap shared among all
 	  processors in a Qualcomm platform.
 
+config QTI_MEMORY_DUMP_V2
+        bool "QTI Memory Dump V2 Support"
+        help
+          This enables memory dump feature. It allows various client
+          subsystems to register respective dump regions. At the time
+          of deadlocks or cpu hangs these dump regions are captured to
+          give a snapshot of the system at the time of the crash.
+
+config QTI_DCC
+        bool "QTI Data Capture and Compare enigne support"
+        help
+          This option enables driver for Data Capture and Compare engine. DCC
+          driver provides interface to configure DCC block and read back
+          captured data from DCC's internal SRAM
+
+config QTI_DCC_V2
+	bool "QTI Data Capture and Compare enigne support"
+	help
+	  This option enables driver for Data Capture and Compare engine. DCC
+	  V2 driver provides interface to configure DCC block and read back
+	  captured data from DCC_V2's internal SRAM
+
+config QTI_EUD
+	tristate "QTI Embedded USB Debugger (EUD)"
+	depends on ARCH_QCOM
+	help
+	  The Embedded USB Debugger (EUD) driver is a driver for the
+	  control peripheral which waits on events like USB attach/detach
+	  and charger enable/disable. The control peripheral further helps
+	  support the USB-based debug and trace capabilities.
+	  This module enables support for Qualcomm Technologies, Inc.
+	  Embedded USB Debugger (EUD).
+	  If unsure, say N.
+
+config EUD_EXTCON_SUPPORT
+	bool "QTI EUD driver supports extcon devices"
+	depends on QTI_EUD
+	default n
+	help
+	  An extcon device can be registered with EUD for charging the
+	  device's battery through USB.
+	  Say y here, if battery power is supported.
+
 config QCOM_SMD_RPM
 	tristate "Qualcomm Resource Power Manager (RPM) over SMD"
 	depends on ARCH_QCOM || COMPILE_TEST
@@ -201,4 +284,69 @@ config QCOM_APR
           application processor and QDSP6. APR is
           used by audio driver to configure QDSP6
           ASM, ADM and AFE modules.
+
+config MSM_RPM_LOG
+	tristate "QTI Resource Power Manager Log Driver"
+	help
+	 This option enables a driver which can read from a circular buffer
+	 of messages produced by the RPM. These messages provide diagnostic
+	 information about RPM operation. The driver outputs the messages
+	 via a debugfs node.
+
+config QTI_TZ_LOG
+	tristate "Trust Zone (TZ) Log Driver"
+	depends on DEBUG_FS
+	help
+	  This option enables a driver with a debugfs interface for messages
+	  produced by the Secure code (Trust zone). These messages provide
+	  diagnostic information about TZ operation.
+
+config QTI_LICENSE_MANAGER
+	tristate "QTI License manager driver"
+	help
+	  This option enables a driver with License Manager QMI Service
+	  running to communicate the license termination mode and license
+	  files to the attached PCIe device.
+
+config QTI_CTXT_SAVE
+	tristate "QTI context save log"
+	depends on QCOM_SCM
+	help
+	  Enable the context save driver, this driver provides a memory to
+	  TZ for crashdump collection, also it provides a TLV buffer for
+	  storing user specific buffer info into crashdump.
+
+config QTI_HW_KEY
+	bool "QTI HW Key driver"
+	depends on QCOM_SCM
+	select KEYS
+	help
+	  This driver requests HW Key and stores in kernel keyring.
+
+config QTI_APSS_ACC
+	bool "QTI APSS Application Clock Controller"
+	depends on ARM64 && QCOM_SCM
+	help
+	  The ACC provides clock, power domain, and reset control to a CPU.
+	  There is one ACC register region per CPU within the APSS remapped
+	  region as well as an alias register region that remaps accesses
+	  to the ACC associated with the CPU accessing the region.
+
+	  If unsure, say N.
+
+config QTI_BT_INTERFACE
+	tristate "TTY interface support for BT over IMEM"
+	default n
+	help
+	  Enable TTY support for BT host over IMEM.
+
+config QCOM_QDSS_BRIDGE
+        bool "Configure bridge driver for QTI/Qualcomm Technologies, Inc. MDM"
+        depends on MHI_BUS
+        help
+          The driver will help route diag traffic from modem side over the QDSS
+          sub-system to USB on APSS side. The driver acts as a bridge between the
+          MHI and USB interface.
+          If unsure, say N.
+
 endmenu

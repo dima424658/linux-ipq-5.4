@@ -26,6 +26,13 @@ struct squashfs_xz {
 	struct xz_buf buf;
 };
 
+struct disk_comp_opts_legacy {
+	__le32 flags;
+	__le16 bit_opts;
+	__le16 fb;
+	__le32 dictionary_size;
+};
+
 struct disk_comp_opts {
 	__le32 dictionary_size;
 	__le32 flags;
@@ -35,10 +42,29 @@ struct comp_opts {
 	int dict_size;
 };
 
+struct dco_version {
+	void *ptr;
+	int len;
+	int off;
+};
+
+#define DCO_VERSION(s, p)				\
+{							\
+	.ptr = p,					\
+	.len = sizeof(struct s),			\
+	.off = offsetof(struct s, dictionary_size)	\
+}
+
+#define DCO_VER_DICT_SIZE(v)				\
+	(*(__le32 *)(((uint8_t *)v.ptr) + v.off))	\
+
 static void *squashfs_xz_comp_opts(struct squashfs_sb_info *msblk,
 	void *buff, int len)
 {
-	struct disk_comp_opts *comp_opts = buff;
+	const struct dco_version vers[] = {
+		DCO_VERSION(disk_comp_opts, buff),
+		DCO_VERSION(disk_comp_opts_legacy, buff),
+	};
 	struct comp_opts *opts;
 	int err = 0, n;
 
@@ -48,26 +74,31 @@ static void *squashfs_xz_comp_opts(struct squashfs_sb_info *msblk,
 		goto out2;
 	}
 
-	if (comp_opts) {
-		/* check compressor options are the expected length */
-		if (len < sizeof(*comp_opts)) {
-			err = -EIO;
-			goto out;
-		}
+	if (buff) {
+		int i;
 
-		opts->dict_size = le32_to_cpu(comp_opts->dictionary_size);
+		for (i = 0; i < ARRAY_SIZE(vers); i++) {
+			/* check compressor options are the expected length */
+			if (len < vers[i].len)
+				continue;
 
-		/* the dictionary size should be 2^n or 2^n+2^(n+1) */
-		n = ffs(opts->dict_size) - 1;
-		if (opts->dict_size != (1 << n) && opts->dict_size != (1 << n) +
-						(1 << (n + 1))) {
-			err = -EIO;
-			goto out;
+			opts->dict_size =
+				le32_to_cpu(DCO_VER_DICT_SIZE(vers[i]));
+
+			/* the dictionary size should be 2^n or 2^n+2^(n+1) */
+			n = ffs(opts->dict_size) - 1;
+			if (opts->dict_size != (1 << n) && opts->dict_size !=
+					(1 << n) + (1 << (n + 1)))
+				continue;
+
+			return opts;
 		}
+		err = -EIO;
+		goto out;
 	} else
 		/* use defaults */
 		opts->dict_size = max_t(int, msblk->block_size,
-							SQUASHFS_METADATA_SIZE);
+						SQUASHFS_METADATA_SIZE);
 
 	return opts;
 

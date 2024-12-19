@@ -200,6 +200,27 @@ bool cfg80211_chandef_valid(const struct cfg80211_chan_def *chandef)
 		if (chandef->center_freq2)
 			return false;
 		break;
+	case NL80211_CHAN_WIDTH_320:
+		if (chandef->center_freq1 != control_freq + 150 &&
+		    chandef->center_freq1 != control_freq + 130 &&
+		    chandef->center_freq1 != control_freq + 110 &&
+		    chandef->center_freq1 != control_freq + 90 &&
+		    chandef->center_freq1 != control_freq + 70 &&
+		    chandef->center_freq1 != control_freq + 50 &&
+		    chandef->center_freq1 != control_freq + 30 &&
+		    chandef->center_freq1 != control_freq + 10 &&
+		    chandef->center_freq1 != control_freq - 10 &&
+		    chandef->center_freq1 != control_freq - 30 &&
+		    chandef->center_freq1 != control_freq - 50 &&
+		    chandef->center_freq1 != control_freq - 70 &&
+		    chandef->center_freq1 != control_freq - 90 &&
+		    chandef->center_freq1 != control_freq - 110 &&
+		    chandef->center_freq1 != control_freq - 130 &&
+		    chandef->center_freq1 != control_freq - 150)
+			return false;
+		if (chandef->center_freq2)
+			return false;
+		break;
 	default:
 		return false;
 	}
@@ -218,7 +239,7 @@ bool cfg80211_chandef_valid(const struct cfg80211_chan_def *chandef)
 EXPORT_SYMBOL(cfg80211_chandef_valid);
 
 static void chandef_primary_freqs(const struct cfg80211_chan_def *c,
-				  u32 *pri40, u32 *pri80)
+				  u32 *pri40, u32 *pri80, u32 *pri160)
 {
 	int tmp;
 
@@ -226,9 +247,11 @@ static void chandef_primary_freqs(const struct cfg80211_chan_def *c,
 	case NL80211_CHAN_WIDTH_40:
 		*pri40 = c->center_freq1;
 		*pri80 = 0;
+		*pri160 = 0;
 		break;
 	case NL80211_CHAN_WIDTH_80:
 	case NL80211_CHAN_WIDTH_80P80:
+		*pri160 = 0;
 		*pri80 = c->center_freq1;
 		/* n_P20 */
 		tmp = (30 + c->chan->center_freq - c->center_freq1)/20;
@@ -238,6 +261,7 @@ static void chandef_primary_freqs(const struct cfg80211_chan_def *c,
 		*pri40 = c->center_freq1 - 20 + 40 * tmp;
 		break;
 	case NL80211_CHAN_WIDTH_160:
+		*pri160 = c->center_freq1;
 		/* n_P20 */
 		tmp = (70 + c->chan->center_freq - c->center_freq1)/20;
 		/* n_P40 */
@@ -247,6 +271,18 @@ static void chandef_primary_freqs(const struct cfg80211_chan_def *c,
 		/* n_P80 */
 		tmp /= 2;
 		*pri80 = c->center_freq1 - 40 + 80 * tmp;
+		break;
+	case NL80211_CHAN_WIDTH_320:
+		*pri160 = c->center_freq1;
+		/* n_P20 */
+		tmp = (150 + c->chan->center_freq - c->center_freq1)/20;
+		/* n_P40 */
+		tmp /= 2;
+		/* freq_P40 */
+		*pri40 = c->center_freq1 - 140 + 40 * tmp;
+		/* n_P80 */
+		tmp /= 2;
+		*pri80 = c->center_freq1 - 120 + 80 * tmp;
 		break;
 	default:
 		WARN_ON_ONCE(1);
@@ -278,6 +314,9 @@ static int cfg80211_chandef_get_width(const struct cfg80211_chan_def *c)
 	case NL80211_CHAN_WIDTH_160:
 		width = 160;
 		break;
+	case NL80211_CHAN_WIDTH_320:
+		width = 320;
+		break;
 	default:
 		WARN_ON_ONCE(1);
 		return -1;
@@ -289,7 +328,7 @@ const struct cfg80211_chan_def *
 cfg80211_chandef_compatible(const struct cfg80211_chan_def *c1,
 			    const struct cfg80211_chan_def *c2)
 {
-	u32 c1_pri40, c1_pri80, c2_pri40, c2_pri80;
+	u32 c1_pri40, c1_pri80, c2_pri40, c2_pri80, c1_pri160, c2_pri160;
 
 	/* If they are identical, return */
 	if (cfg80211_chandef_identical(c1, c2))
@@ -324,14 +363,18 @@ cfg80211_chandef_compatible(const struct cfg80211_chan_def *c1,
 	    c2->width == NL80211_CHAN_WIDTH_20)
 		return c1;
 
-	chandef_primary_freqs(c1, &c1_pri40, &c1_pri80);
-	chandef_primary_freqs(c2, &c2_pri40, &c2_pri80);
+	chandef_primary_freqs(c1, &c1_pri40, &c1_pri80, &c1_pri160);
+	chandef_primary_freqs(c2, &c2_pri40, &c2_pri80, &c2_pri160);
 
 	if (c1_pri40 != c2_pri40)
 		return NULL;
 
 	WARN_ON(!c1_pri80 && !c2_pri80);
 	if (c1_pri80 && c2_pri80 && c1_pri80 != c2_pri80)
+		return NULL;
+
+	WARN_ON(!c1_pri160 && !c2_pri160);
+	if (c1_pri160 && c2_pri160 && c1_pri160 != c2_pri160)
 		return NULL;
 
 	if (c1->width > c2->width)
@@ -436,8 +479,20 @@ int cfg80211_chandef_dfs_required(struct wiphy *wiphy,
 	int width;
 	int ret;
 
-	if (WARN_ON(!cfg80211_chandef_valid(chandef)))
+	if (!cfg80211_chandef_valid(chandef)) {
+		printk(KERN_DEBUG "chandef is Invalid \n");
+		if (chandef->chan) {
+			printk(KERN_DEBUG "Band %d Freq %d Chan Flags %d "
+			       "DFS state %d \n", chandef->chan->band,
+			       chandef->chan->center_freq, chandef->chan->flags,
+			       chandef->chan->dfs_state);
+		}
+		printk(KERN_DEBUG "Chandef Width %d cf1 %d cf2 %d \n",
+		       chandef->width, chandef->center_freq1,
+		       chandef->center_freq2);
+		BUG_ON(1);
 		return -EINVAL;
+	}
 
 	switch (iftype) {
 	case NL80211_IFTYPE_ADHOC:
@@ -805,15 +860,21 @@ cfg80211_chandef_dfs_cac_time(struct wiphy *wiphy,
 
 static bool cfg80211_secondary_chans_ok(struct wiphy *wiphy,
 					u32 center_freq, u32 bandwidth,
-					u32 prohibited_flags)
+					u32 prohibited_flags,
+					u32 puncture_bitmap)
 {
 	struct ieee80211_channel *c;
 	u32 freq, start_freq, end_freq;
+	u32 disabled_sub_chan = 0;
 
 	start_freq = cfg80211_get_start_freq(center_freq, bandwidth);
 	end_freq = cfg80211_get_end_freq(center_freq, bandwidth);
 
 	for (freq = start_freq; freq <= end_freq; freq += 20) {
+		disabled_sub_chan = (1 << (freq - start_freq)/20) & puncture_bitmap;
+		if (disabled_sub_chan) {
+			continue;
+		}
 		c = ieee80211_get_channel(wiphy, freq);
 		if (!c || c->flags & prohibited_flags)
 			return false;
@@ -875,21 +936,114 @@ static bool cfg80211_edmg_usable(struct wiphy *wiphy, u8 edmg_channels,
 	return true;
 }
 
+static inline bool
+cfg80211_width40_valid(struct ieee80211_sta_ht_cap *ht_cap,
+		       struct ieee80211_sta_he_cap *he_cap)
+{
+	u8 he_phy_cap_info;
+
+	if (ht_cap->ht_supported) {
+		if ((ht_cap->cap & IEEE80211_HT_CAP_SUP_WIDTH_20_40) &&
+		    !(ht_cap->cap & IEEE80211_HT_CAP_40MHZ_INTOLERANT))
+			return true;
+	} else if (he_cap && he_cap->has_he) {
+		he_phy_cap_info = he_cap->he_cap_elem.phy_cap_info[0];
+		if ((he_phy_cap_info &
+		    IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G) ||
+		    (he_phy_cap_info &
+		    IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G))
+			return true;
+	}
+
+	return false;
+}
+
+static inline bool
+cfg80211_width80p80_valid(struct ieee80211_sta_vht_cap *vht_cap,
+			  struct ieee80211_sta_he_cap *he_cap)
+{
+	u8 he_phy_cap_info;
+	u32 cap;
+
+	if (vht_cap->vht_supported) {
+		cap = vht_cap->cap & IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_MASK;
+		if (cap == IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ)
+			return true;
+	} else if (he_cap && he_cap->has_he) {
+		he_phy_cap_info = he_cap->he_cap_elem.phy_cap_info[0];
+		if (he_phy_cap_info &
+		    IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_80PLUS80_MHZ_IN_5G)
+			return true;
+	}
+
+	return false;
+}
+
+static inline bool
+cfg80211_width160_valid(struct ieee80211_sta_vht_cap *vht_cap,
+			struct ieee80211_sta_he_cap *he_cap)
+{
+	u8 he_phy_cap_info;
+	u32 cap;
+
+	if (vht_cap->vht_supported) {
+		cap = vht_cap->cap & IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_MASK;
+		if (cap == IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160MHZ ||
+		    cap == IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ)
+			return true;
+	} else if (he_cap && he_cap->has_he) {
+		he_phy_cap_info = he_cap->he_cap_elem.phy_cap_info[0];
+		if (he_phy_cap_info &
+		    IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G)
+			return true;
+	}
+
+	return false;
+}
+
 bool cfg80211_chandef_usable(struct wiphy *wiphy,
 			     const struct cfg80211_chan_def *chandef,
 			     u32 prohibited_flags)
 {
 	struct ieee80211_sta_ht_cap *ht_cap;
 	struct ieee80211_sta_vht_cap *vht_cap;
+	struct ieee80211_sta_he_cap *he_cap = NULL;
 	struct ieee80211_edmg *edmg_cap;
-	u32 width, control_freq, cap;
+	u32 width, control_freq;
+	u8 he_phy_cap_info;
+	enum nl80211_band band;
+	struct ieee80211_supported_band *sband;
+	const struct ieee80211_sband_iftype_data *iftd;
+	bool has_he = false;
+	bool has_eht = false;
+	int i =0;
+	u32 puncture_bitmap_cfreq1 = 0;
+	u32 puncture_bitmap_cfreq2 = 0;
 
-	if (WARN_ON(!cfg80211_chandef_valid(chandef)))
-		return false;
+	if (!cfg80211_chandef_valid(chandef)) {
+		printk(KERN_DEBUG "chandef is Invalid \n");
+		if (chandef->chan) {
+			printk(KERN_DEBUG "Band %d Freq %d Chan Flags %d "
+			       "DFS state %d \n", chandef->chan->band,
+			       chandef->chan->center_freq, chandef->chan->flags,
+			       chandef->chan->dfs_state);
+		}
+		printk(KERN_DEBUG "Chandef Width %d cf1 %d cf2 %d \n",
+		       chandef->width, chandef->center_freq1,
+		       chandef->center_freq2);
+		BUG_ON(1);
+		return -EINVAL;
+	}
 
 	ht_cap = &wiphy->bands[chandef->chan->band]->ht_cap;
 	vht_cap = &wiphy->bands[chandef->chan->band]->vht_cap;
 	edmg_cap = &wiphy->bands[chandef->chan->band]->edmg_cap;
+
+	if (wiphy->bands[chandef->chan->band]->iftype_data) {
+		he_cap = &wiphy->bands[chandef->chan->band]->iftype_data->he_cap;
+		he_phy_cap_info = he_cap->he_cap_elem.phy_cap_info[0];
+		has_he = he_cap->has_he;
+	}
 
 	if (edmg_cap->channels &&
 	    !cfg80211_edmg_usable(wiphy,
@@ -910,7 +1064,7 @@ bool cfg80211_chandef_usable(struct wiphy *wiphy,
 		width = 10;
 		break;
 	case NL80211_CHAN_WIDTH_20:
-		if (!ht_cap->ht_supported)
+		if (!(ht_cap->ht_supported || has_he))
 			return false;
 		/* fall through */
 	case NL80211_CHAN_WIDTH_20_NOHT:
@@ -919,10 +1073,7 @@ bool cfg80211_chandef_usable(struct wiphy *wiphy,
 		break;
 	case NL80211_CHAN_WIDTH_40:
 		width = 40;
-		if (!ht_cap->ht_supported)
-			return false;
-		if (!(ht_cap->cap & IEEE80211_HT_CAP_SUP_WIDTH_20_40) ||
-		    ht_cap->cap & IEEE80211_HT_CAP_40MHZ_INTOLERANT)
+		if (!cfg80211_width40_valid(ht_cap, he_cap))
 			return false;
 		if (chandef->center_freq1 < control_freq &&
 		    chandef->chan->flags & IEEE80211_CHAN_NO_HT40MINUS)
@@ -932,25 +1083,52 @@ bool cfg80211_chandef_usable(struct wiphy *wiphy,
 			return false;
 		break;
 	case NL80211_CHAN_WIDTH_80P80:
-		cap = vht_cap->cap & IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_MASK;
-		if (cap != IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ)
+		if (!cfg80211_width80p80_valid(vht_cap, he_cap))
 			return false;
 		/* fall through */
 	case NL80211_CHAN_WIDTH_80:
-		if (!vht_cap->vht_supported)
+		if (!(vht_cap->vht_supported ||
+		     (has_he &&
+		      (he_phy_cap_info & IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G))))
 			return false;
 		prohibited_flags |= IEEE80211_CHAN_NO_80MHZ;
 		width = 80;
 		break;
 	case NL80211_CHAN_WIDTH_160:
-		if (!vht_cap->vht_supported)
-			return false;
-		cap = vht_cap->cap & IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_MASK;
-		if (cap != IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160MHZ &&
-		    cap != IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ)
+		if (!cfg80211_width160_valid(vht_cap, he_cap))
 			return false;
 		prohibited_flags |= IEEE80211_CHAN_NO_160MHZ;
 		width = 160;
+		break;
+	case NL80211_CHAN_WIDTH_320:
+		prohibited_flags |= IEEE80211_CHAN_NO_320MHZ;
+		width = 320;
+
+		band = chandef->chan->band;
+		if (band == NL80211_BAND_6GHZ)
+			break;
+
+		sband = wiphy->bands[band];
+		if (!sband)
+			return false;
+
+		for (i = 0; i < sband->n_iftype_data; i++) {
+			iftd = &sband->iftype_data[i];
+			if (!iftd)
+				continue;
+
+			if (i == 0)
+				has_eht = iftd->eht_cap.has_eht;
+			else
+				has_eht = has_eht && iftd->eht_cap.has_eht;
+		}
+
+		if (!has_eht)
+			return false;
+
+		/* TODO:
+		 * Check ieee80211_eht_cap_elem for 320 MHz capability
+		 */
 		break;
 	default:
 		WARN_ON_ONCE(1);
@@ -975,15 +1153,19 @@ bool cfg80211_chandef_usable(struct wiphy *wiphy,
 	if (width < 20)
 		prohibited_flags |= IEEE80211_CHAN_NO_OFDM;
 
+	if (chandef->center_freq2)
+		puncture_bitmap_cfreq2 = chandef->puncture_bitmap;
+	else
+		puncture_bitmap_cfreq1 = chandef->puncture_bitmap;
 
 	if (!cfg80211_secondary_chans_ok(wiphy, chandef->center_freq1,
-					 width, prohibited_flags))
+					 width, prohibited_flags, puncture_bitmap_cfreq1))
 		return false;
 
 	if (!chandef->center_freq2)
 		return true;
 	return cfg80211_secondary_chans_ok(wiphy, chandef->center_freq2,
-					   width, prohibited_flags);
+					   width, prohibited_flags, puncture_bitmap_cfreq2);
 }
 EXPORT_SYMBOL(cfg80211_chandef_usable);
 

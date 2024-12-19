@@ -23,6 +23,8 @@ endif
 GZFLAGS		:=-9
 #KBUILD_CFLAGS	+=-pipe
 
+KBUILD_CFLAGS += -Werror
+
 # Never generate .eh_frame
 KBUILD_CFLAGS	+= $(call cc-option,-fno-dwarf2-cfi-asm)
 
@@ -153,6 +155,14 @@ ifeq ($(CONFIG_ARCH_SA1100),y)
 textofs-$(CONFIG_SA1111) := 0x00208000
 endif
 textofs-$(CONFIG_ARCH_MSM8X60) := 0x00208000
+ifneq ($(CONFIG_ARCH_IPQ9574)$(CONFIG_ARCH_IPQ5332),y)
+ifeq ($(CONFIG_ARCH_IPQ6018),y)
+textofs-$(CONFIG_ARCH_IPQ256M) := 0x01008000
+else
+textofs-$(CONFIG_ARCH_IPQ256M) := 0x01208000
+endif
+endif
+textofs-$(CONFIG_ARCH_IPQ9574) := 0x02008000
 textofs-$(CONFIG_ARCH_MSM8960) := 0x00208000
 textofs-$(CONFIG_ARCH_MESON) := 0x00208000
 textofs-$(CONFIG_ARCH_AXXIA) := 0x00308000

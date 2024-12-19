@@ -32,6 +32,11 @@
 
 #define CORESIGHT_UNLOCK	0xc5acce55
 
+#define Q6STREAM_SIZE	(1024 * 1024)
+#define TOTAL_PAGES_PER_DATA	(Q6STREAM_SIZE / PAGE_SIZE)
+#define PAGES_PER_DATA	8
+#define COMP_PAGES_PER_DATA (TOTAL_PAGES_PER_DATA - PAGES_PER_DATA)
+
 extern struct bus_type coresight_bustype;
 
 enum coresight_dev_type {
@@ -90,10 +95,12 @@ union coresight_dev_subtype {
 };
 
 /**
- * struct coresight_platform_data - data harvested from the DT specification
- * @nr_inport:	number of input ports for this component.
- * @nr_outport:	number of output ports for this component.
- * @conns:	Array of nr_outport connections from this component
+ * struct coresight_platform_data - data harvested from the firmware
+ * specification.
+ *
+ * @nr_inport:	Number of elements for the input connections.
+ * @nr_outport:	Number of elements for the output connections.
+ * @conns:	Sparse array of nr_outport connections from this component.
  */
 struct coresight_platform_data {
 	int nr_inport;
@@ -205,6 +212,7 @@ static struct coresight_dev_list (var) = {				\
  * @alloc_buffer:	initialises perf's ring buffer for trace collection.
  * @free_buffer:	release memory allocated in @get_config.
  * @update_buffer:	update buffer pointers after a trace session.
+ * @abort:		captures sink trace on abort.
  */
 struct coresight_ops_sink {
 	int (*enable)(struct coresight_device *csdev, u32 mode, void *data);
@@ -216,6 +224,7 @@ struct coresight_ops_sink {
 	unsigned long (*update_buffer)(struct coresight_device *csdev,
 			      struct perf_output_handle *handle,
 			      void *sink_config);
+	void (*abort)(struct coresight_device *csdev);
 };
 
 /**
@@ -285,6 +294,7 @@ extern void coresight_disclaim_device(void __iomem *base);
 extern void coresight_disclaim_device_unlocked(void __iomem *base);
 extern char *coresight_alloc_device_name(struct coresight_dev_list *devs,
 					 struct device *dev);
+extern void coresight_abort(void);
 #else
 static inline struct coresight_device *
 coresight_register(struct coresight_desc *desc) { return NULL; }
@@ -306,7 +316,7 @@ static inline int coresight_claim_device(void __iomem *base)
 
 static inline void coresight_disclaim_device(void __iomem *base) {}
 static inline void coresight_disclaim_device_unlocked(void __iomem *base) {}
-
+static inline void coresight_abort(void) {}
 #endif
 
 extern int coresight_get_cpu(struct device *dev);

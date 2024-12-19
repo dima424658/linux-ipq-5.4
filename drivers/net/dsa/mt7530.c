@@ -1083,12 +1083,6 @@ mt7530_port_vlan_add(struct dsa_switch *ds, int port,
 	struct mt7530_priv *priv = ds->priv;
 	u16 vid;
 
-	/* The port is kept as VLAN-unaware if bridge with vlan_filtering not
-	 * being set.
-	 */
-	if (!dsa_port_is_vlan_filtering(&ds->ports[port]))
-		return;
-
 	mutex_lock(&priv->reg_mutex);
 
 	for (vid = vlan->vid_begin; vid <= vlan->vid_end; ++vid) {
@@ -1114,12 +1108,6 @@ mt7530_port_vlan_del(struct dsa_switch *ds, int port,
 	struct mt7530_priv *priv = ds->priv;
 	u16 vid, pvid;
 
-	/* The port is kept as VLAN-unaware if bridge with vlan_filtering not
-	 * being set.
-	 */
-	if (!dsa_port_is_vlan_filtering(&ds->ports[port]))
-		return 0;
-
 	mutex_lock(&priv->reg_mutex);
 
 	pvid = priv->ports[port].pvid;
@@ -1141,6 +1129,64 @@ mt7530_port_vlan_del(struct dsa_switch *ds, int port,
 	mutex_unlock(&priv->reg_mutex);
 
 	return 0;
+}
+
+static int mt7530_port_mirror_add(struct dsa_switch *ds, int port,
+				  struct dsa_mall_mirror_tc_entry *mirror,
+				  bool ingress)
+{
+	struct mt7530_priv *priv = ds->priv;
+	u32 val;
+
+	/* Check for existent entry */
+	if ((ingress ? priv->mirror_rx : priv->mirror_tx) & BIT(port))
+		return -EEXIST;
+
+	val = mt7530_read(priv, MT7530_MFC);
+
+	/* MT7530 only supports one monitor port */
+	if (val & MIRROR_EN && MIRROR_PORT(val) != mirror->to_local_port)
+		return -EEXIST;
+
+	val |= MIRROR_EN;
+	val &= ~MIRROR_MASK;
+	val |= mirror->to_local_port;
+	mt7530_write(priv, MT7530_MFC, val);
+
+	val = mt7530_read(priv, MT7530_PCR_P(port));
+	if (ingress) {
+		val |= PORT_RX_MIR;
+		priv->mirror_rx |= BIT(port);
+	} else {
+		val |= PORT_TX_MIR;
+		priv->mirror_tx |= BIT(port);
+	}
+	mt7530_write(priv, MT7530_PCR_P(port), val);
+
+	return 0;
+}
+
+static void mt7530_port_mirror_del(struct dsa_switch *ds, int port,
+				   struct dsa_mall_mirror_tc_entry *mirror)
+{
+	struct mt7530_priv *priv = ds->priv;
+	u32 val;
+
+	val = mt7530_read(priv, MT7530_PCR_P(port));
+	if (mirror->ingress) {
+		val &= ~PORT_RX_MIR;
+		priv->mirror_rx &= ~BIT(port);
+	} else {
+		val &= ~PORT_TX_MIR;
+		priv->mirror_tx &= ~BIT(port);
+	}
+	mt7530_write(priv, MT7530_PCR_P(port), val);
+
+	if (!priv->mirror_rx && !priv->mirror_tx) {
+		val = mt7530_read(priv, MT7530_MFC);
+		val &= ~MIRROR_EN;
+		mt7530_write(priv, MT7530_MFC, val);
+	}
 }
 
 static enum dsa_tag_protocol
@@ -1174,6 +1220,7 @@ mt7530_setup(struct dsa_switch *ds)
 	 * as two netdev instances.
 	 */
 	dn = ds->ports[MT7530_CPU_PORT].master->dev.of_node->parent;
+	ds->configure_vlan_while_not_filtering = true;
 
 	if (priv->id == ID_MT7530) {
 		regulator_set_voltage(priv->core_pwr, 1000000, 1000000);
@@ -1362,9 +1409,13 @@ static void mt7530_phylink_mac_config(struct dsa_switch *ds, int port,
 	switch (state->speed) {
 	case SPEED_1000:
 		mcr_new |= PMCR_FORCE_SPEED_1000;
+		if (priv->eee_enable & BIT(port))
+			mcr_new |= PMCR_FORCE_EEE1G;
 		break;
 	case SPEED_100:
 		mcr_new |= PMCR_FORCE_SPEED_100;
+		if (priv->eee_enable & BIT(port))
+			mcr_new |= PMCR_FORCE_EEE100;
 		break;
 	}
 	if (state->duplex == DUPLEX_FULL) {
@@ -1500,6 +1551,54 @@ mt7530_phylink_mac_link_state(struct dsa_switch *ds, int port,
 	return 1;
 }
 
+static int mt7530_get_mac_eee(struct dsa_switch *ds, int port,
+			      struct ethtool_eee *e)
+{
+	struct mt7530_priv *priv = ds->priv;
+	u32 eeecr, pmsr;
+
+	e->eee_enabled = !!(priv->eee_enable & BIT(port));
+
+	if (e->eee_enabled) {
+		eeecr = mt7530_read(priv, MT7530_PMEEECR_P(port));
+		e->tx_lpi_enabled = !(eeecr & LPI_MODE_EN);
+		e->tx_lpi_timer   = (eeecr >> 4) & 0xFFF;
+		pmsr = mt7530_read(priv, MT7530_PMSR_P(port));
+		e->eee_active  = e->eee_enabled && !!(pmsr & PMSR_EEE1G);
+	} else {
+		e->tx_lpi_enabled = 0;
+		e->tx_lpi_timer = 0;
+		e->eee_active = 0;
+	}
+
+	return 0;
+}
+
+static int mt7530_set_mac_eee(struct dsa_switch *ds, int port,
+			      struct ethtool_eee *e)
+{
+	struct mt7530_priv *priv = ds->priv;
+	u32 eeecr;
+
+	if (e->tx_lpi_enabled && e->tx_lpi_timer > 0xFFF)
+		return -EINVAL;
+
+	if (e->eee_enabled) {
+		priv->eee_enable |= BIT(port);
+		//MT7530_PMEEECR_P
+		eeecr = mt7530_read(priv, MT7530_PMEEECR_P(port));
+		eeecr &= 0xFFFF0000;
+		if (!e->tx_lpi_enabled)
+			eeecr |= LPI_MODE_EN;
+		eeecr = LPI_THRESH(e->tx_lpi_timer);
+		mt7530_write(priv, MT7530_PMEEECR_P(port), eeecr);
+	} else {
+		priv->eee_enable &= ~(BIT(port));
+	}
+
+	return 0;
+}
+
 static const struct dsa_switch_ops mt7530_switch_ops = {
 	.get_tag_protocol	= mtk_get_tag_protocol,
 	.setup			= mt7530_setup,
@@ -1520,11 +1619,15 @@ static const struct dsa_switch_ops mt7530_switch_ops = {
 	.port_vlan_prepare	= mt7530_port_vlan_prepare,
 	.port_vlan_add		= mt7530_port_vlan_add,
 	.port_vlan_del		= mt7530_port_vlan_del,
+	.port_mirror_add	= mt7530_port_mirror_add,
+	.port_mirror_del	= mt7530_port_mirror_del,
 	.phylink_validate	= mt7530_phylink_validate,
 	.phylink_mac_link_state = mt7530_phylink_mac_link_state,
 	.phylink_mac_config	= mt7530_phylink_mac_config,
 	.phylink_mac_link_down	= mt7530_phylink_mac_link_down,
 	.phylink_mac_link_up	= mt7530_phylink_mac_link_up,
+	.get_mac_eee		= mt7530_get_mac_eee,
+	.set_mac_eee		= mt7530_set_mac_eee,
 };
 
 static const struct of_device_id mt7530_of_match[] = {

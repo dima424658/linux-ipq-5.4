@@ -12,13 +12,22 @@
 #include <linux/module.h>
 #include <linux/reboot.h>
 #include <linux/pm.h>
+#include <linux/qcom_scm.h>
 
+static int secure;
 static void __iomem *msm_ps_hold;
 static int deassert_pshold(struct notifier_block *nb, unsigned long action,
 			   void *data)
 {
-	writel(0, msm_ps_hold);
-	mdelay(10000);
+	int ret;
+
+	if (secure) {
+		ret = qti_scm_pshold();
+		pr_info("Resetting using secure PSHOLD : returned %d\n", ret);
+	} else {
+		writel(0, msm_ps_hold);
+		mdelay(10000);
+	}
 
 	return NOTIFY_DONE;
 }
@@ -46,6 +55,8 @@ static int msm_restart_probe(struct platform_device *pdev)
 	register_restart_handler(&restart_nb);
 
 	pm_power_off = do_msm_poweroff;
+
+	secure = of_property_read_bool(pdev->dev.of_node, "qcom,secure");
 
 	return 0;
 }

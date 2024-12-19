@@ -157,6 +157,7 @@ struct cfg80211_internal_bss {
 	unsigned long ts;
 	unsigned long refcount;
 	atomic_t hold;
+	bool in_rbtree;
 
 	/* time at the start of the reception of the first octet of the
 	 * timestamp field of the last beacon/probe received for this BSS.
@@ -259,6 +260,7 @@ struct cfg80211_event {
 			size_t ie_len;
 			u16 reason;
 			bool locally_generated;
+			int link_id;
 		} dc;
 		struct {
 			u8 bssid[ETH_ALEN];
@@ -305,6 +307,7 @@ int cfg80211_dev_rename(struct cfg80211_registered_device *rdev,
 void ieee80211_set_bitrate_flags(struct wiphy *wiphy);
 
 void cfg80211_bss_expire(struct cfg80211_registered_device *rdev);
+void cfg80211_bss_expire_entry(struct wiphy *wiphy, unsigned long expire_time);
 void cfg80211_bss_age(struct cfg80211_registered_device *rdev,
                       unsigned long age_secs);
 void cfg80211_update_assoc_bss_entry(struct wireless_dev *wdev,
@@ -354,9 +357,11 @@ int cfg80211_leave_ocb(struct cfg80211_registered_device *rdev,
 
 /* AP */
 int __cfg80211_stop_ap(struct cfg80211_registered_device *rdev,
-		       struct net_device *dev, bool notify);
+		       struct net_device *dev, bool notify,
+		       struct genl_info *info);
 int cfg80211_stop_ap(struct cfg80211_registered_device *rdev,
-		     struct net_device *dev, bool notify);
+		     struct net_device *dev, bool notify,
+		     struct genl_info *info);
 
 /* MLME */
 int cfg80211_mlme_auth(struct cfg80211_registered_device *rdev,
@@ -409,7 +414,8 @@ void __cfg80211_connect_result(struct net_device *dev,
 			       struct cfg80211_connect_resp_params *params,
 			       bool wextev);
 void __cfg80211_disconnected(struct net_device *dev, const u8 *ie,
-			     size_t ie_len, u16 reason, bool from_ap);
+			     size_t ie_len, u16 reason, bool from_ap,
+			     int link_id);
 int cfg80211_disconnect(struct cfg80211_registered_device *rdev,
 			struct net_device *dev, u16 reason,
 			bool wextev);

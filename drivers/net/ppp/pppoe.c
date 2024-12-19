@@ -62,6 +62,7 @@
 #include <linux/inetdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
+#include <linux/if_arp.h>
 #include <linux/init.h>
 #include <linux/if_ether.h>
 #include <linux/if_pppox.h>
@@ -72,6 +73,11 @@
 #include <linux/file.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+
+#if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
+#include <linux/netfilter.h>
+#include <net/netfilter/nf_flow_table.h>
+#endif
 
 #include <linux/nsproxy.h>
 #include <net/net_namespace.h>
@@ -87,7 +93,7 @@
 static int __pppoe_xmit(struct sock *sk, struct sk_buff *skb);
 
 static const struct proto_ops pppoe_ops;
-static const struct ppp_channel_ops pppoe_chan_ops;
+static const struct pppoe_channel_ops pppoe_chan_ops;
 
 /* per-net private data for this module */
 static unsigned int pppoe_net_id __read_mostly;
@@ -647,6 +653,7 @@ static int pppoe_connect(struct socket *sock, struct sockaddr *uservaddr,
 	if (stage_session(po->pppoe_pa.sid)) {
 		pppox_unbind_sock(sk);
 		pn = pppoe_pernet(sock_net(sk));
+
 		delete_item(pn, po->pppoe_pa.sid,
 			    po->pppoe_pa.remote, po->pppoe_ifindex);
 		if (po->pppoe_dev) {
@@ -694,7 +701,7 @@ static int pppoe_connect(struct socket *sock, struct sockaddr *uservaddr,
 
 		po->chan.mtu = dev->mtu - sizeof(struct pppoe_hdr) - 2;
 		po->chan.private = sk;
-		po->chan.ops = &pppoe_chan_ops;
+		po->chan.ops = (struct ppp_channel_ops *)&pppoe_chan_ops;
 
 		error = ppp_register_net_channel(dev_net(dev), &po->chan);
 		if (error) {
@@ -974,8 +981,107 @@ static int pppoe_xmit(struct ppp_channel *chan, struct sk_buff *skb)
 	return __pppoe_xmit(sk, skb);
 }
 
-static const struct ppp_channel_ops pppoe_chan_ops = {
-	.start_xmit = pppoe_xmit,
+#if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
+static int pppoe_flow_offload_check(struct ppp_channel *chan,
+				    struct flow_offload_hw_path *path)
+{
+	struct sock *sk = (struct sock *)chan->private;
+	struct pppox_sock *po = pppox_sk(sk);
+	struct net_device *dev = po->pppoe_dev;
+
+	if (sock_flag(sk, SOCK_DEAD) ||
+	    !(sk->sk_state & PPPOX_CONNECTED) || !dev)
+		return -ENODEV;
+
+	path->dev = po->pppoe_dev;
+	path->flags |= FLOW_OFFLOAD_PATH_PPPOE;
+	memcpy(path->eth_src, po->pppoe_dev->dev_addr, ETH_ALEN);
+	memcpy(path->eth_dest, po->pppoe_pa.remote, ETH_ALEN);
+	path->pppoe_sid = be16_to_cpu(po->num);
+
+	if (path->dev->netdev_ops->ndo_flow_offload_check)
+		return path->dev->netdev_ops->ndo_flow_offload_check(path);
+
+	return 0;
+}
+#endif /* CONFIG_NF_FLOW_TABLE */
+
+/************************************************************************
+ *
+ * function called by generic PPP driver to hold channel
+ *
+ ***********************************************************************/
+static void pppoe_hold_chan(struct ppp_channel *chan)
+{
+	struct sock *sk = (struct sock *)chan->private;
+
+	sock_hold(sk);
+}
+
+/************************************************************************
+ *
+ * function called by generic PPP driver to release channel
+ *
+ ***********************************************************************/
+static void pppoe_release_chan(struct ppp_channel *chan)
+{
+	struct sock *sk = (struct sock *)chan->private;
+
+	sock_put(sk);
+}
+
+/************************************************************************
+ *
+ * function called to get the channel protocol type
+ *
+ ***********************************************************************/
+static int pppoe_get_channel_protocol(struct ppp_channel *chan)
+{
+	return PX_PROTO_OE;
+}
+
+/************************************************************************
+ *
+ * function called to get the PPPoE channel addressing
+ * NOTE: This function returns a HOLD to the netdevice
+ *
+ ***********************************************************************/
+static int pppoe_get_addressing(struct ppp_channel *chan,
+				 struct pppoe_opt *addressing)
+{
+	struct sock *sk = (struct sock *)chan->private;
+	struct pppox_sock *po = pppox_sk(sk);
+	int err = 0;
+
+	*addressing = po->proto.pppoe;
+	if (!addressing->dev)
+		return -ENODEV;
+
+	dev_hold(addressing->dev);
+	return err;
+}
+
+/* pppoe_channel_addressing_get()
+ *	Return PPPoE channel specific addressing information.
+ */
+int pppoe_channel_addressing_get(struct ppp_channel *chan,
+				  struct pppoe_opt *addressing)
+{
+	return pppoe_get_addressing(chan, addressing);
+}
+EXPORT_SYMBOL(pppoe_channel_addressing_get);
+
+static const struct pppoe_channel_ops pppoe_chan_ops = {
+	/* PPPoE specific channel ops */
+	.get_addressing = pppoe_get_addressing,
+	/* General ppp channel ops */
+	.ops.start_xmit = pppoe_xmit,
+#if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
+	.ops.flow_offload_check = pppoe_flow_offload_check,
+#endif
+	.ops.get_channel_protocol = pppoe_get_channel_protocol,
+	.ops.hold = pppoe_hold_chan,
+	.ops.release = pppoe_release_chan,
 };
 
 static int pppoe_recvmsg(struct socket *sock, struct msghdr *m,

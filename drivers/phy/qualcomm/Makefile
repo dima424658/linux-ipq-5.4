@@ -10,3 +10,5 @@ obj-$(CONFIG_PHY_QCOM_UFS_14NM)		+= phy-qcom-ufs-qmp-14nm.o
 obj-$(CONFIG_PHY_QCOM_UFS_20NM)		+= phy-qcom-ufs-qmp-20nm.o
 obj-$(CONFIG_PHY_QCOM_USB_HS) 		+= phy-qcom-usb-hs.o
 obj-$(CONFIG_PHY_QCOM_USB_HSIC) 	+= phy-qcom-usb-hsic.o
+obj-$(CONFIG_PHY_IPQ_UNIPHY_USB)	+= phy-qca-uniphy.o
+obj-$(CONFIG_PHY_IPQ_UNIPHY_PCIE)	+= phy-qca-pcie-uniphy.o

@@ -45,6 +45,7 @@ struct qce_sha_reqctx {
 	unsigned int buflen;
 	unsigned long flags;
 	struct scatterlist *src_orig;
+	u8 *result_orig;
 	unsigned int nbytes_orig;
 	int src_nents;
 	__be32 byte_count[2];

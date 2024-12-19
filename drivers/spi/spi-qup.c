@@ -149,6 +149,7 @@ struct spi_qup {
 	int			mode;
 	struct dma_slave_config	rx_conf;
 	struct dma_slave_config	tx_conf;
+	unsigned long transfer_timeout;
 };
 
 static int spi_qup_io_config(struct spi_device *spi, struct spi_transfer *xfer);
@@ -857,7 +858,7 @@ static int spi_qup_transfer_one(struct spi_master *master,
 	timeout = DIV_ROUND_UP(xfer->speed_hz, MSEC_PER_SEC);
 	timeout = DIV_ROUND_UP(min_t(unsigned long, SPI_MAX_XFER,
 				     xfer->len) * 8, timeout);
-	timeout = 100 * msecs_to_jiffies(timeout);
+	timeout = controller->transfer_timeout * msecs_to_jiffies(timeout);
 
 	reinit_completion(&controller->done);
 
@@ -1000,8 +1001,9 @@ static int spi_qup_probe(struct platform_device *pdev)
 	struct resource *res;
 	struct device *dev;
 	void __iomem *base;
-	u32 max_freq, iomode, num_cs;
-	int ret, irq, size;
+	u32 max_freq, iomode, num_cs, cs_select;
+	int ret, irq, size, disable_force_cs = 0;
+	u32 transfer_timeout;
 
 	dev = &pdev->dev;
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -1028,6 +1030,14 @@ static int spi_qup_probe(struct platform_device *pdev)
 	if (!max_freq || max_freq > SPI_MAX_RATE) {
 		dev_err(dev, "invalid clock frequency %d\n", max_freq);
 		return -ENXIO;
+	}
+
+	/* Use cs-select dt-property to configure QUP SPI chip select.
+	 * Default chip select is 0.
+	 */
+	if (of_property_read_u32(pdev->dev.of_node, "cs-select", &cs_select)) {
+		dev_dbg(dev, "cs-select not found\n");
+		cs_select = 0;
 	}
 
 	master = spi_alloc_master(dev, sizeof(struct spi_qup));
@@ -1071,8 +1081,17 @@ static int spi_qup_probe(struct platform_device *pdev)
 
 	controller->qup_v1 = (uintptr_t)of_device_get_match_data(dev);
 
+	if (of_find_property(dev->of_node, "qcom,disable-force-cs", NULL))
+		disable_force_cs = 1;
+
+	if (!of_property_read_u32(dev->of_node, "spi-transfer-timeout", &transfer_timeout))
+		controller->transfer_timeout = transfer_timeout;
+	else
+		controller->transfer_timeout = 200;
+
 	if (!controller->qup_v1)
-		master->set_cs = spi_qup_set_cs;
+		if (!disable_force_cs)
+			master->set_cs = spi_qup_set_cs;
 
 	spin_lock_init(&controller->lock);
 	init_completion(&controller->done);
@@ -1138,7 +1157,8 @@ static int spi_qup_probe(struct platform_device *pdev)
 			base + QUP_ERROR_FLAGS_EN);
 
 	writel_relaxed(0, base + SPI_CONFIG);
-	writel_relaxed(SPI_IO_C_NO_TRI_STATE, base + SPI_IO_CONTROL);
+	writel_relaxed(SPI_IO_C_NO_TRI_STATE | SPI_IO_C_CS_SELECT(cs_select),
+		       base + SPI_IO_CONTROL);
 
 	ret = devm_request_irq(dev, irq, spi_qup_qup_irq,
 			       IRQF_TRIGGER_HIGH, pdev->name, controller);

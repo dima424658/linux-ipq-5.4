@@ -1116,6 +1116,9 @@ static bool fib_valid_key_len(u32 key, u8 plen, struct netlink_ext_ack *extack)
 	return true;
 }
 
+/* Define route change notification chain. */
+static BLOCKING_NOTIFIER_HEAD(iproute_chain);
+
 /* Caller must hold RTNL. */
 int fib_table_insert(struct net *net, struct fib_table *tb,
 		     struct fib_config *cfg, struct netlink_ext_ack *extack)
@@ -1283,6 +1286,8 @@ int fib_table_insert(struct net *net, struct fib_table *tb,
 	rtmsg_fib(RTM_NEWROUTE, htonl(key), new_fa, plen, new_fa->tb_id,
 		  &cfg->fc_nlinfo, nlflags);
 succeeded:
+	blocking_notifier_call_chain(&iproute_chain,
+				     RTM_NEWROUTE, fi);
 	return 0;
 
 out_fib_notif:
@@ -1609,6 +1614,8 @@ int fib_table_delete(struct net *net, struct fib_table *tb,
 	if (fa_to_delete->fa_state & FA_S_ACCESSED)
 		rt_cache_flush(cfg->fc_nlinfo.nl_net);
 
+	blocking_notifier_call_chain(&iproute_chain,
+				     RTM_DELROUTE, fa_to_delete->fa_info);
 	fib_release_info(fa_to_delete->fa_info);
 	alias_free_mem_rcu(fa_to_delete);
 	return 0;
@@ -2220,6 +2227,18 @@ void __init fib_trie_init(void)
 					   0, SLAB_PANIC, NULL);
 }
 
+int ip_rt_register_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_register(&iproute_chain, nb);
+}
+EXPORT_SYMBOL(ip_rt_register_notifier);
+
+int ip_rt_unregister_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_unregister(&iproute_chain, nb);
+}
+EXPORT_SYMBOL(ip_rt_unregister_notifier);
+
 struct fib_table *fib_trie_table(u32 id, struct fib_table *alias)
 {
 	struct fib_table *tb;
@@ -2596,6 +2615,7 @@ static const char *const rtn_type_names[__RTN_MAX] = {
 	[RTN_THROW] = "THROW",
 	[RTN_NAT] = "NAT",
 	[RTN_XRESOLVE] = "XRESOLVE",
+	[RTN_POLICY_FAILED] = "POLICY_FAILED",
 };
 
 static inline const char *rtn_type(char *buf, size_t len, unsigned int t)
@@ -2847,11 +2867,13 @@ static const struct seq_operations fib_route_seq_ops = {
 
 int __net_init fib_proc_init(struct net *net)
 {
-	if (!proc_create_net("fib_trie", 0444, net->proc_net, &fib_trie_seq_ops,
+	if (!IS_ENABLED(CONFIG_PROC_STRIPPED) &&
+			!proc_create_net("fib_trie", 0444, net->proc_net, &fib_trie_seq_ops,
 			sizeof(struct fib_trie_iter)))
 		goto out1;
 
-	if (!proc_create_net_single("fib_triestat", 0444, net->proc_net,
+	if (!IS_ENABLED(CONFIG_PROC_STRIPPED) &&
+			!proc_create_net_single("fib_triestat", 0444, net->proc_net,
 			fib_triestat_seq_show, NULL))
 		goto out2;
 
@@ -2862,17 +2884,21 @@ int __net_init fib_proc_init(struct net *net)
 	return 0;
 
 out3:
-	remove_proc_entry("fib_triestat", net->proc_net);
+	if (!IS_ENABLED(CONFIG_PROC_STRIPPED))
+		remove_proc_entry("fib_triestat", net->proc_net);
 out2:
-	remove_proc_entry("fib_trie", net->proc_net);
+	if (!IS_ENABLED(CONFIG_PROC_STRIPPED))
+		remove_proc_entry("fib_trie", net->proc_net);
 out1:
 	return -ENOMEM;
 }
 
 void __net_exit fib_proc_exit(struct net *net)
 {
-	remove_proc_entry("fib_trie", net->proc_net);
-	remove_proc_entry("fib_triestat", net->proc_net);
+	if (!IS_ENABLED(CONFIG_PROC_STRIPPED)) {
+		remove_proc_entry("fib_trie", net->proc_net);
+		remove_proc_entry("fib_triestat", net->proc_net);
+	}
 	remove_proc_entry("route", net->proc_net);
 }
 

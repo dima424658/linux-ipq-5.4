@@ -309,6 +309,7 @@ struct Qdisc *qdisc_lookup(struct net_device *dev, u32 handle)
 out:
 	return q;
 }
+EXPORT_SYMBOL(qdisc_lookup);
 
 struct Qdisc *qdisc_lookup_rcu(struct net_device *dev, u32 handle)
 {
@@ -2300,7 +2301,7 @@ static int __init pktsched_init(void)
 		return err;
 	}
 
-	register_qdisc(&pfifo_fast_ops);
+	register_qdisc(&fq_codel_qdisc_ops);
 	register_qdisc(&pfifo_qdisc_ops);
 	register_qdisc(&bfifo_qdisc_ops);
 	register_qdisc(&pfifo_head_drop_qdisc_ops);

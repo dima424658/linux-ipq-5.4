@@ -134,6 +134,7 @@ needed).
    misc-devices/index
    mic/index
    scheduler/index
+   mhi/index
 
 Architecture-agnostic documentation
 -----------------------------------

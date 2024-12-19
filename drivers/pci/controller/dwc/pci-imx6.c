@@ -853,9 +853,6 @@ static int imx6_pcie_host_init(struct pcie_port *pp)
 	dw_pcie_setup_rc(pp);
 	imx6_pcie_establish_link(imx6_pcie);
 
-	if (IS_ENABLED(CONFIG_PCI_MSI))
-		dw_pcie_msi_init(pp);
-
 	return 0;
 }
 
@@ -870,14 +867,6 @@ static int imx6_add_pcie_port(struct imx6_pcie *imx6_pcie,
 	struct pcie_port *pp = &pci->pp;
 	struct device *dev = &pdev->dev;
 	int ret;
-
-	if (IS_ENABLED(CONFIG_PCI_MSI)) {
-		pp->msi_irq = platform_get_irq_byname(pdev, "msi");
-		if (pp->msi_irq <= 0) {
-			dev_err(dev, "failed to get MSI irq\n");
-			return -ENODEV;
-		}
-	}
 
 	pp->ops = &imx6_pcie_host_ops;
 

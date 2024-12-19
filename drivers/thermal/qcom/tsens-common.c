@@ -151,7 +151,7 @@ static const struct regmap_config tsens_srot_config = {
 	.reg_stride	= 4,
 };
 
-int __init init_common(struct tsens_priv *priv)
+int init_common(struct tsens_priv *priv)
 {
 	void __iomem *tm_base, *srot_base;
 	struct device *dev = priv->dev;
@@ -190,6 +190,8 @@ int __init init_common(struct tsens_priv *priv)
 		ret = PTR_ERR(tm_base);
 		goto err_put_device;
 	}
+
+	priv->iomem_base = tm_base;
 
 	priv->tm_map = devm_regmap_init_mmio(dev, tm_base, &tsens_config);
 	if (IS_ERR(priv->tm_map)) {

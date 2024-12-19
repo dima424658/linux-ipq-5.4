@@ -460,7 +460,8 @@ static u32 clear_idx;
 #define LOG_BUF_LEN_MAX (u32)(1 << 31)
 static char __log_buf[__LOG_BUF_LEN] __aligned(LOG_ALIGN);
 static char *log_buf = __log_buf;
-static u32 log_buf_len = __LOG_BUF_LEN;
+u32 log_buf_len = __LOG_BUF_LEN;
+EXPORT_SYMBOL(log_buf_len);
 
 /*
  * We cannot access per-CPU data (e.g. per-CPU flush irq_work) before
@@ -2089,6 +2090,14 @@ asmlinkage __visible int printk(const char *fmt, ...)
 	return r;
 }
 EXPORT_SYMBOL(printk);
+
+#ifdef CONFIG_QCA_MINIDUMP
+void minidump_get_log_buf_info(uint64_t *plog_buf, uint64_t *plog_buf_len)
+{
+	*plog_buf = (uint64_t)(uintptr_t)log_buf;
+	*plog_buf_len = (uint64_t)__pa(&log_buf_len);
+}
+#endif /* CONFIG_QCA_MINIDUMP */
 
 #else /* CONFIG_PRINTK */
 

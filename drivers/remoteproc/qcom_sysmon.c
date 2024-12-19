@@ -292,6 +292,7 @@ static void ssctl_request_shutdown(struct qcom_sysmon *sysmon)
 
 	reinit_completion(&sysmon->ind_comp);
 	reinit_completion(&sysmon->shutdown_comp);
+	memset(&resp, 0, sizeof(resp));
 	ret = qmi_txn_init(&sysmon->qmi, &txn, ssctl_shutdown_resp_ei, &resp);
 	if (ret < 0) {
 		dev_err(sysmon->dev, "failed to allocate QMI txn\n");

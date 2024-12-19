@@ -20,6 +20,7 @@
 #include <linux/etherdevice.h>
 #include <asm/byteorder.h>
 #include <asm/unaligned.h>
+#define IEEE80211_MLD_MAX_NUM_LINKS     15
 
 /*
  * DS bit usage
@@ -1570,6 +1571,79 @@ struct ieee80211_vht_operation {
 } __packed;
 
 /**
+ * enum ieee80211_eht_mcs_support - EHT MCS support definitions
+ * @IEEE80211_EHT_MCS_SUPPORT_0_9: MCSes 0-9 are supported for the
+ *	number of streams
+ * @IEEE80211_EHT_MCS_SUPPORT_0_11: MCSes 0-11 are supported
+ * @IEEE80211_EHT_MCS_SUPPORT_0_13: MCSes 0-13 are supported
+ * @IEEE80211_EHT_MCS_NOT_SUPPORTED: This number of streams isn't supported
+ *
+ * These definitions are used in each 2-bit subfield of the rx_mcs_*
+ * and tx_mcs_* fields of &struct ieee80211_eht_mcs_nss_supp, which are
+ * both split into 16 subfields by number of streams. These values indicate
+ * which MCSes are supported for the number of streams the value appears
+ * for.
+ */
+enum ieee80211_eht_mcs_support {
+	IEEE80211_EHT_MCS_SUPPORT_0_9	= 0,
+	IEEE80211_EHT_MCS_SUPPORT_0_11	= 1,
+	IEEE80211_EHT_MCS_SUPPORT_0_13	= 2,
+	IEEE80211_EHT_MCS_NOT_SUPPORTED	= 3,
+};
+
+/**
+ * struct ieee80211_eht_mcs_nss_supp - EHT Tx/Rx HE MCS NSS Support Field
+ *
+ * This structure holds the data required for the Tx/Rx HE MCS NSS Support Field
+ * described in Drat
+ *
+ * @rx_mcs_80: Rx MCS map 2 bits for each stream, total 16 streams, for channel
+ *     widths less than 80MHz.
+ * @tx_mcs_80: Tx MCS map 2 bits for each stream, total 16 streams, for channel
+ *     widths less than 80MHz.
+ * @rx_mcs_160: Rx MCS map 2 bits for each stream, total 16 streams, for channel
+ *     width 160MHz.
+ * @tx_mcs_160: Tx MCS map 2 bits for each stream, total 16 streams, for channel
+ *     width 160MHz.
+ * @rx_mcs_320: Rx MCS map 2 bits for each stream, total 16 streams, for channel
+ *	   width 320MHz.
+ * @tx_mcs_320: Tx MCS map 2 bits for each stream, total 16 streams, for channel
+ *     width 320MHz.
+ */
+struct ieee80211_eht_mcs_nss_supp {
+	__le32 rx_mcs_80;
+	__le32 tx_mcs_80;
+	__le32 rx_mcs_160;
+	__le32 tx_mcs_160;
+	__le32 rx_mcs_320;
+	__le32 tx_mcs_320;
+} __packed;
+
+/**
+ * struct ieee80211_eht_operation - EHT capabilities element
+ *
+ * This structure is the "EHT operation element" fields as
+ * described in 11be Draft
+ */
+struct ieee80211_eht_operation {
+	__le32 eht_oper_params;
+	__le16 eht_mcs_nss_set;
+	/* Optional 0,1,3,4,5,7 or 8 bytes: depends on @eht_oper_params */
+	u8 optional[0];
+} __packed;
+
+/**
+ * struct ieee80211_eht_cap_elem - HE capabilities element
+ *
+ * This structure is the "EHT capabilities element" fixed fields as
+ * described in 11be Draft
+ */
+struct ieee80211_eht_cap_elem {
+	u8 mac_cap_info[2]; /* TBD */
+	u8 phy_cap_info[9]; /* TBD */
+} __packed;
+
+/**
  * struct ieee80211_he_cap_elem - HE capabilities element
  *
  * This structure is the "HE capabilities element" fixed fields as
@@ -1579,6 +1653,7 @@ struct ieee80211_he_cap_elem {
 	u8 mac_cap_info[6];
 	u8 phy_cap_info[11];
 } __packed;
+
 
 #define IEEE80211_TX_RX_MCS_NSS_DESC_MAX_LEN	5
 
@@ -2130,6 +2205,14 @@ ieee80211_he_spr_size(const u8 *he_spr_ie)
 	return spr_len;
 }
 
+/* 802.11be EHT MAC capabilities */
+
+/* TBD: 11BE MAC capabilities go here */
+
+/* 802.11be EHT PHY capabilities */
+
+/* TBD: 11BE PHY capabilities go here */
+
 /* Authentication algorithms */
 #define WLAN_AUTH_OPEN 0
 #define WLAN_AUTH_SHARED_KEY 1
@@ -2525,6 +2608,8 @@ enum ieee80211_eid {
 	WLAN_EID_QUIET_CHANNEL = 198,
 	WLAN_EID_OPMODE_NOTIF = 199,
 
+	WLAN_EID_REDUCED_NEIGHBOR_REPORT = 201,
+
 	WLAN_EID_VENDOR_SPECIFIC = 221,
 	WLAN_EID_QOS_PARAMETER = 222,
 	WLAN_EID_CAG_NUMBER = 237,
@@ -2556,6 +2641,8 @@ enum ieee80211_eid_ext {
 	WLAN_EID_EXT_MAX_CHANNEL_SWITCH_TIME = 52,
 	WLAN_EID_EXT_MULTIPLE_BSSID_CONFIGURATION = 55,
 	WLAN_EID_EXT_NON_INHERITANCE = 56,
+	WLAN_EID_EXT_EHT_OPERATION = 106,
+	WLAN_EID_EXT_EHT_CAPABILITY = 108,
 };
 
 /* Action category code */
@@ -3097,6 +3184,11 @@ struct ieee80211_tspec_ie {
 	__le16 medium_time;
 } __packed;
 
+struct ieee80211_he_6ghz_capa {
+        /* uses IEEE80211_HE_6GHZ_CAP_* below */
+        __le16 capa;
+} __packed;
+
 /**
  * ieee80211_get_qos_ctl - get pointer to qos control bytes
  * @hdr: the frame
@@ -3420,5 +3512,16 @@ static inline bool for_each_element_completed(const struct element *element,
 {
 	return (const u8 *)element == (const u8 *)data + datalen;
 }
+
+/*
+ * TBTT Information field, based on Draft P802.11be_D1.4
+ * section 9.4.2.170.2
+ */
+#define IEEE80211_TBTT_INFO_BSSID_SSID_BSS_PARAM_PSD		13
+#define IEEE80211_TBTT_INFO_BSSID_SSID_BSS_PARAM_PSD_MLD_PARAM	16
+#define IEEE80211_TBTT_TYPE_MASK	0xC0
+#define IEEE80211_TBTT_COUNT_MASK	0x0F
+/* TBTT infomation header(2) + Operating class(1) + Channel number(1) */
+#define IEEE80211_NBR_AP_INFO_LEN	4
 
 #endif /* LINUX_IEEE80211_H */

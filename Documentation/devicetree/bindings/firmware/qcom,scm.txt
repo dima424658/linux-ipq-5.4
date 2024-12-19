@@ -10,6 +10,7 @@ Required properties:
  * "qcom,scm-apq8064"
  * "qcom,scm-apq8084"
  * "qcom,scm-ipq4019"
+ * "qcom,scm-ipq8074"
  * "qcom,scm-msm8660"
  * "qcom,scm-msm8916"
  * "qcom,scm-msm8960"
@@ -30,6 +31,10 @@ Required properties:
   clock and "bus" for the bus clock per the requirements of the compatible.
 - qcom,dload-mode: phandle to the TCSR hardware block and offset of the
 		   download mode control register (optional)
+- hvc-log-cmd-id: contains SCM command id to get the hypervisor diag log.
+		  If not defined, default value 0x7 will be used (optional)
+- smmu-state-cmd-id: contains SCM command id to get the SMMU state. If not
+		     defined, default value 0x19 will be used (optional)
 
 Example for MSM8916:
 

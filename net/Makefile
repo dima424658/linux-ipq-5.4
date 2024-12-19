@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: GPL-2.0
 #
-# Makefile for the linux networking.
+#  Makefile for the linux networking.
 #
 # 2 Sep 2000, Christoph Hellwig <hch@infradead.org>
 # Rewritten to use lists instead of if-statements.
 #
+
+KBUILD_CFLAGS := $(filter-out -Werror, $(KBUILD_CFLAGS))
 
 obj-$(CONFIG_NET)		:= socket.o core/
 
@@ -52,7 +54,7 @@ obj-$(CONFIG_TIPC)		+= tipc/
 obj-$(CONFIG_NETLABEL)		+= netlabel/
 obj-$(CONFIG_IUCV)		+= iucv/
 obj-$(CONFIG_SMC)		+= smc/
-obj-$(CONFIG_RFKILL)		+= rfkill/
+obj-$(CONFIG_RFKILL_FULL)	+= rfkill/
 obj-$(CONFIG_NET_9P)		+= 9p/
 obj-$(CONFIG_CAIF)		+= caif/
 ifneq ($(CONFIG_DCB),)

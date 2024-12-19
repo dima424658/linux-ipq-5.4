@@ -81,3 +81,11 @@ const struct tsens_plat_data data_8996 = {
 	.feat		= &tsens_v2_feat,
 	.fields	= tsens_v2_regfields,
 };
+
+/* Used V2 fields and feat for IPQ8074 */
+const struct tsens_plat_data data_ipq807x = {
+		.num_sensors    = 16,
+		.ops            = &ops_ipq807x,
+		.feat           = &tsens_v2_feat,
+		.fields = tsens_v2_regfields,
+};

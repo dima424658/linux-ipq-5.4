@@ -18,6 +18,8 @@
 #include <linux/if_vlan.h>
 #include <linux/rhashtable.h>
 #include <linux/refcount.h>
+#include <linux/export.h>
+#include <linux/netfilter.h>
 
 #define BR_HASH_BITS 8
 #define BR_HASH_SIZE (1 << BR_HASH_BITS)
@@ -235,8 +237,11 @@ struct net_bridge_port {
 	struct net_bridge_port		__rcu *backup_port;
 
 	/* STP */
+	u8				sub_br_id;
 	u8				priority;
 	u8				state;
+	u16				mac_lrn_cnt;
+	u16				mac_lrn_limit;
 	u16				port_no;
 	unsigned char			topology_change_ack;
 	unsigned char			config_pending;
@@ -344,6 +349,8 @@ struct net_bridge {
 #endif
 	u16				group_fwd_mask;
 	u16				group_fwd_mask_required;
+
+	bool				disable_eap_hack;
 
 	/* STP */
 	bridge_id			designated_root;
@@ -623,8 +630,11 @@ netdev_features_t br_features_recompute(struct net_bridge *br,
 void br_port_flags_change(struct net_bridge_port *port, unsigned long mask);
 void br_manage_promisc(struct net_bridge *br);
 int nbp_backup_change(struct net_bridge_port *p, struct net_device *backup_dev);
+int br_port_set_sub_br_id(struct net_bridge_port *p, unsigned long new_sub_br_id);
+int br_port_set_mac_lrn_limit(struct net_bridge_port *p, unsigned long new_mac_lrn_limit);
 
 /* br_input.c */
+int br_pass_frame_up(struct sk_buff *skb);
 int br_handle_frame_finish(struct net *net, struct sock *sk, struct sk_buff *skb);
 rx_handler_result_t br_handle_frame(struct sk_buff **pskb);
 
@@ -909,6 +919,7 @@ void br_vlan_get_stats(const struct net_bridge_vlan *v,
 void br_vlan_port_event(struct net_bridge_port *p, unsigned long event);
 int br_vlan_bridge_event(struct net_device *dev, unsigned long event,
 			 void *ptr);
+void br_vlan_disable_default_pvid(struct net_bridge *br);
 
 static inline struct net_bridge_vlan_group *br_vlan_group(
 					const struct net_bridge *br)
@@ -1115,11 +1126,24 @@ extern const struct nf_br_ops __rcu *nf_br_ops;
 int br_nf_core_init(void);
 void br_nf_core_fini(void);
 void br_netfilter_rtable_init(struct net_bridge *);
+bool br_netfilter_run_hooks(struct net *net);
 #else
 static inline int br_nf_core_init(void) { return 0; }
 static inline void br_nf_core_fini(void) {}
 #define br_netfilter_rtable_init(x)
+static inline bool br_netfilter_run_hooks(struct net *net) { return false; }
 #endif
+
+static inline int
+BR_HOOK(uint8_t pf, unsigned int hook, struct net *net, struct sock *sk,
+	struct sk_buff *skb, struct net_device *in, struct net_device *out,
+	int (*okfn)(struct net *, struct sock *, struct sk_buff *))
+{
+	if (!br_netfilter_run_hooks(net))
+		return okfn(net, sk, skb);
+
+	return NF_HOOK(pf, hook, net, sk, skb, in, out, okfn);
+}
 
 /* br_stp.c */
 void br_set_state(struct net_bridge_port *p, unsigned int state);
@@ -1266,4 +1290,16 @@ void br_do_proxy_suppress_arp(struct sk_buff *skb, struct net_bridge *br,
 void br_do_suppress_nd(struct sk_buff *skb, struct net_bridge *br,
 		       u16 vid, struct net_bridge_port *p, struct nd_msg *msg);
 struct nd_msg *br_is_nd_neigh_msg(struct sk_buff *skb, struct nd_msg *m);
+
+#define __br_get(__hook, __default, __args ...) \
+		(__hook ? (__hook(__args)) : (__default))
+
+static inline void __br_notify(int group, int type, const void *data)
+{
+	br_notify_hook_t *notify_hook = rcu_dereference(br_notify_hook);
+
+	if (notify_hook)
+		notify_hook(group, type, data);
+}
+
 #endif

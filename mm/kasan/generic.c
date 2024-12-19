@@ -206,6 +206,9 @@ static void register_global(struct kasan_global *global)
 {
 	size_t aligned_size = round_up(global->size, KASAN_SHADOW_SCALE_SIZE);
 
+	if ((unsigned long)global->beg >= VMALLOC_START
+		&& (unsigned long)global->beg < VMALLOC_END)
+		return;
 	kasan_unpoison_shadow(global->beg, global->size);
 
 	kasan_poison_shadow(global->beg + aligned_size,

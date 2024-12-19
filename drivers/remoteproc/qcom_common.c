@@ -207,6 +207,35 @@ static void ssr_notify_unprepare(struct rproc_subdev *subdev)
 	blocking_notifier_call_chain(&ssr_notifiers, 0, (void *)ssr->name);
 }
 
+char **qcom_get_ssr_subdev_name(struct device *dev, int *num_subdev)
+{
+	int tmp = 0;
+	char **subdev_name;
+	struct qcom_rproc_ssr *ssr;
+	struct rproc_subdev *subdev;
+	struct rproc *rproc = rproc_get_by_child(dev);
+
+	if (!rproc) {
+		pr_info("rproc null\n");
+		return NULL;
+	}
+
+	list_for_each_entry(subdev, &rproc->subdevs, node)
+		(*num_subdev)++;
+
+	subdev_name = kcalloc(*num_subdev, sizeof(char *), GFP_KERNEL);
+	if (!subdev_name) {
+		pr_info("subdev name alloc failed\n");
+		return NULL;
+	}
+
+	list_for_each_entry(subdev, &rproc->subdevs, node) {
+		ssr = to_ssr_subdev(subdev);
+		subdev_name[tmp++] = (char *)ssr->name;
+	}
+	return subdev_name;
+}
+
 /**
  * qcom_add_ssr_subdev() - register subdevice as restart notification source
  * @rproc:	rproc handle
@@ -236,6 +265,29 @@ void qcom_remove_ssr_subdev(struct rproc *rproc, struct qcom_rproc_ssr *ssr)
 	rproc_remove_subdev(rproc, &ssr->subdev);
 }
 EXPORT_SYMBOL_GPL(qcom_remove_ssr_subdev);
+
+/**
+ * qcom_get_pd_asid() - get the pd asid number from DT node
+ * @node:	device tree node
+ */
+u8 qcom_get_pd_asid(struct device_node *node)
+{
+	char *str;
+	u8 pd_asid = 0;
+
+	if (!node)
+		goto ret_asid;
+
+	str = strstr(node->name, "pd");
+	if (!str)
+		goto ret_asid;
+
+	str += strlen("pd");
+	kstrtou8(str, 10, &pd_asid);
+ret_asid:
+	return pd_asid;
+}
+EXPORT_SYMBOL(qcom_get_pd_asid);
 
 MODULE_DESCRIPTION("Qualcomm Remoteproc helper driver");
 MODULE_LICENSE("GPL v2");

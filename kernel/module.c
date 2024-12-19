@@ -252,6 +252,11 @@ static void mod_update_bounds(struct module *mod)
 struct list_head *kdb_modules = &modules; /* kdb needs the list of modules */
 #endif /* CONFIG_KGDB_KDB */
 
+#ifdef CONFIG_QCA_MINIDUMP
+struct list_head *minidump_modules = &modules;
+EXPORT_SYMBOL(minidump_modules);
+#endif /* CONFIG_QCA_MINIDUMP */
+
 static void module_assert_mutex(void)
 {
 	lockdep_assert_held(&module_mutex);
@@ -1281,6 +1286,7 @@ static struct module_attribute *modinfo_attrs[] = {
 
 static const char vermagic[] = VERMAGIC_STRING;
 
+#if defined (CONFIG_MODVERSIONS) || !defined (CONFIG_MODULE_STRIPPED)
 static int try_to_force_load(struct module *mod, const char *reason)
 {
 #ifdef CONFIG_MODULE_FORCE_LOAD
@@ -1292,6 +1298,7 @@ static int try_to_force_load(struct module *mod, const char *reason)
 	return -ENOEXEC;
 #endif
 }
+#endif
 
 #ifdef CONFIG_MODVERSIONS
 
@@ -2510,7 +2517,7 @@ static void layout_sections(struct module *mod, struct load_info *info)
 			if ((s->sh_flags & masks[m][0]) != masks[m][0]
 			    || (s->sh_flags & masks[m][1])
 			    || s->sh_entsize != ~0UL
-			    || strstarts(sname, ".init"))
+			    || module_init_section(sname))
 				continue;
 			s->sh_entsize = get_offset(mod, &mod->core_layout.size, s, i);
 			pr_debug("\t%s\n", sname);
@@ -2543,7 +2550,7 @@ static void layout_sections(struct module *mod, struct load_info *info)
 			if ((s->sh_flags & masks[m][0]) != masks[m][0]
 			    || (s->sh_flags & masks[m][1])
 			    || s->sh_entsize != ~0UL
-			    || !strstarts(sname, ".init"))
+			    || !module_init_section(sname))
 				continue;
 			s->sh_entsize = (get_offset(mod, &mod->init_layout.size, s, i)
 					 | INIT_OFFSET_MASK);
@@ -2876,6 +2883,11 @@ static void dynamic_debug_remove(struct module *mod, struct _ddebug *debug)
 void * __weak module_alloc(unsigned long size)
 {
 	return vmalloc_exec(size);
+}
+
+bool __weak module_init_section(const char *name)
+{
+	return strstarts(name, ".init");
 }
 
 bool __weak module_exit_section(const char *name)
@@ -3256,8 +3268,10 @@ static int setup_load_info(struct load_info *info, int flags)
 
 static int check_modinfo(struct module *mod, struct load_info *info, int flags)
 {
-	const char *modmagic = get_modinfo(info, "vermagic");
 	int err;
+
+#ifndef CONFIG_MODULE_STRIPPED
+	const char *modmagic = get_modinfo(info, "vermagic");
 
 	if (flags & MODULE_INIT_IGNORE_VERMAGIC)
 		modmagic = NULL;
@@ -3279,6 +3293,7 @@ static int check_modinfo(struct module *mod, struct load_info *info, int flags)
 				mod->name);
 		add_taint_module(mod, TAINT_OOT_MODULE, LOCKDEP_STILL_OK);
 	}
+#endif
 
 	check_modinfo_retpoline(mod, info);
 

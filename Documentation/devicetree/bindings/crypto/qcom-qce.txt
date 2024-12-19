@@ -12,6 +12,10 @@ Required properties:
                 Documentation/devicetree/bindings/dma/dma.txt
 - dma-names   : DMA request names should be "rx" and "tx"
 
+Optional properties:
+
+- qce,no-clock-init : Clock initialization will be done in QSEE.
+
 Example:
 	crypto@fd45a000 {
 		compatible = "qcom,crypto-v5.1";

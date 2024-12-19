@@ -45,7 +45,6 @@ config NFT_FIB_IPV6
 	  multicast or blackhole.
 
 endif # NF_TABLES_IPV6
-endif # NF_TABLES
 
 config NF_FLOW_TABLE_IPV6
 	tristate "Netfilter flow table IPv6 module"
@@ -54,6 +53,8 @@ config NF_FLOW_TABLE_IPV6
 	  This option adds the flow table IPv6 support.
 
 	  To compile it as a module, choose M here.
+
+endif # NF_TABLES
 
 config NF_DUP_IPV6
 	tristate "Netfilter IPv6 packet duplication to alternate destination"
@@ -287,7 +288,17 @@ config IP6_NF_TARGET_NPT
 endif # IP6_NF_NAT
 
 endif # IP6_NF_IPTABLES
+
 endmenu
 
 config NF_DEFRAG_IPV6
 	tristate
+
+config NF_IPV6_DUMMY_HEADER
+	bool "Retain Dummy fragment header"
+	depends on NF_DEFRAG_IPV6
+	default n
+	help
+	  This option allows to retain dummy fragment header in an IPv6 packet.
+	  Dummy fragment header is the fragment header with Fragment Offset and
+	  M bit as 0.

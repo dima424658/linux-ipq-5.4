@@ -1111,6 +1111,7 @@ static const struct of_device_id pmic_gpio_of_match[] = {
 	{ .compatible = "qcom,pmi8994-gpio", .data = (void *) 10 },
 	{ .compatible = "qcom,pm8998-gpio", .data = (void *) 26 },
 	{ .compatible = "qcom,pmi8998-gpio", .data = (void *) 14 },
+	{ .compatible = "qcom,pm8074-gpio", .data = (void *) 12 },
 	{ .compatible = "qcom,pma8084-gpio", .data = (void *) 22 },
 	/* pms405 has 12 GPIOs with holes on 1, 9, and 10 */
 	{ .compatible = "qcom,pms405-gpio", .data = (void *) 12 },
@@ -1134,7 +1135,17 @@ static struct platform_driver pmic_gpio_driver = {
 	.remove = pmic_gpio_remove,
 };
 
-module_platform_driver(pmic_gpio_driver);
+static int __init pmic_gpio_driver_init(void)
+{
+	return platform_driver_register(&pmic_gpio_driver);
+}
+arch_initcall(pmic_gpio_driver_init);
+
+static void __exit pmic_gpio_driver_exit(void)
+{
+	platform_driver_unregister(&pmic_gpio_driver);
+}
+module_exit(pmic_gpio_driver_exit);
 
 MODULE_AUTHOR("Ivan T. Ivanov <iivanov@mm-sol.com>");
 MODULE_DESCRIPTION("Qualcomm SPMI PMIC GPIO pin control driver");

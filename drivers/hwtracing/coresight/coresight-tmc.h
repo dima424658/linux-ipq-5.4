@@ -12,6 +12,17 @@
 #include <linux/miscdevice.h>
 #include <linux/mutex.h>
 #include <linux/refcount.h>
+#include <linux/coresight-cti.h>
+#include <linux/delay.h>
+#include <asm/cacheflush.h>
+#include <linux/of_address.h>
+#include <linux/amba/bus.h>
+#include <linux/usb_bam.h>
+#include <linux/msm-sps.h>
+#include <linux/usb/usb_qdss.h>
+
+#include "coresight-byte-cntr.h"
+#include "coresight-priv.h"
 
 #define TMC_RSZ			0x004
 #define TMC_STS			0x00c
@@ -90,6 +101,8 @@
 #define TMC_DEVID_AXIAW_VALID	BIT(16)
 #define TMC_DEVID_AXIAW_SHIFT	17
 #define TMC_DEVID_AXIAW_MASK	0x7f
+#define TMC_ETR_BAM_PIPE_INDEX	0
+#define TMC_ETR_BAM_NR_PIPES	2
 
 #define TMC_AUTH_NSID_MASK	GENMASK(1, 0)
 
@@ -134,9 +147,45 @@ enum etr_mode {
 	ETR_MODE_FLAT,		/* Uses contiguous flat buffer */
 	ETR_MODE_ETR_SG,	/* Uses in-built TMC ETR SG mechanism */
 	ETR_MODE_CATU,		/* Use SG mechanism in CATU */
+	ETR_MODE_Q6MEM,
 };
 
+enum tmc_etr_out_mode {
+	TMC_ETR_OUT_MODE_NONE,
+	TMC_ETR_OUT_MODE_MEM,
+	TMC_ETR_OUT_MODE_USB,
+	TMC_ETR_OUT_MODE_Q6MEM,
+	TMC_ETR_OUT_MODE_Q6MEM_STREAM,
+};
+
+static const char * const str_tmc_etr_out_mode[] = {
+	[TMC_ETR_OUT_MODE_NONE]		= "none",
+	[TMC_ETR_OUT_MODE_MEM]		= "mem",
+	[TMC_ETR_OUT_MODE_USB]		= "usb",
+	[TMC_ETR_OUT_MODE_Q6MEM]	= "q6mem",
+	[TMC_ETR_OUT_MODE_Q6MEM_STREAM] = "q6mem_stream",
+};
+
+struct tmc_etr_bam_data {
+	struct sps_bam_props	props;
+	unsigned long		handle;
+	struct sps_pipe		*pipe;
+	struct sps_connect	connect;
+	uint32_t		src_pipe_idx;
+	unsigned long		dest;
+	uint32_t		dest_pipe_idx;
+	struct sps_mem_buffer	desc_fifo;
+	struct sps_mem_buffer	data_fifo;
+	bool			enable;
+};
 struct etr_buf_operations;
+
+struct etr_flat_buf {
+	struct device	*dev;
+	dma_addr_t	daddr;
+	void		*vaddr;
+	size_t		size;
+};
 
 /**
  * struct etr_buf - Details of the buffer used by ETR
@@ -184,6 +233,7 @@ struct etr_buf {
  * @idr_mutex:	Access serialisation for idr.
  * @sysfs_buf:	SYSFS buffer for ETR.
  * @perf_buf:	PERF buffer for ETR.
+ * @etr_usb_clk: Clock for the ETR block.
  */
 struct tmc_drvdata {
 	void __iomem		*base;
@@ -201,12 +251,33 @@ struct tmc_drvdata {
 	u32			mode;
 	enum tmc_config_type	config_type;
 	enum tmc_mem_intf_width	memwidth;
+	struct mutex		mem_lock;
 	u32			trigger_cntr;
 	u32			etr_caps;
 	struct idr		idr;
 	struct mutex		idr_mutex;
 	struct etr_buf		*sysfs_buf;
 	struct etr_buf		*perf_buf;
+	struct coresight_csr	*csr;
+	const char		*csr_name;
+	bool			enable;
+	struct byte_cntr	*byte_cntr;
+	struct usb_qdss_ch	*usbch;
+	struct tmc_etr_bam_data	*bamdata;
+	bool			enable_to_bam;
+	struct coresight_cti	*cti_flush;
+	struct coresight_cti	*cti_reset;
+	enum tmc_etr_out_mode	out_mode;
+	void __iomem		*q6_etr_vaddr;
+	dma_addr_t		q6_etr_paddr;
+	u32			q6_size;
+	struct work_struct	qld_stream_work;
+	struct socket		*qld_stream_sock;
+	atomic_t		seq_no;
+	atomic_t		completed_seq_no;
+	struct clk		*etr_usb_clk;
+	void __iomem		*in_funnel_base;
+	u32			atid_offset;
 };
 
 struct etr_buf_operations {
@@ -223,11 +294,13 @@ struct etr_buf_operations {
  * @nr_pages:		Number of pages in the list.
  * @daddrs:		Array of DMA'able page address.
  * @pages:		Array pages for the buffer.
+ * @order:		Order of the page
  */
 struct tmc_pages {
 	int nr_pages;
 	dma_addr_t	*daddrs;
 	struct page	**pages;
+	int order;
 };
 
 /*
@@ -250,6 +323,62 @@ struct tmc_sg_table {
 	struct tmc_pages data_pages;
 };
 
+/*
+ * The TMC ETR SG has a page size of 4K. The SG table contains pointers
+ * to 4KB buffers. However, the OS may use a PAGE_SIZE different from
+ * 4K (i.e, 16KB or 64KB). This implies that a single OS page could
+ * contain more than one SG buffer and tables.
+ *
+ * A table entry has the following format:
+ *
+ * ---Bit31------------Bit4-------Bit1-----Bit0--
+ * |     Address[39:12]    | SBZ |  Entry Type  |
+ * ----------------------------------------------
+ *
+ * Address: Bits [39:12] of a physical page address. Bits [11:0] are
+ *	    always zero.
+ *
+ * Entry type:
+ *	b00 - Reserved.
+ *	b01 - Last entry in the tables, points to 4K page buffer.
+ *	b10 - Normal entry, points to 4K page buffer.
+ *	b11 - Link. The address points to the base of next table.
+ */
+
+typedef u32 sgte_t;
+
+#define ETR_SG_PAGE_SHIFT		12
+#define ETR_SG_PAGE_SIZE		(1UL << ETR_SG_PAGE_SHIFT)
+#define ETR_SG_PAGES_PER_SYSPAGE	(PAGE_SIZE / ETR_SG_PAGE_SIZE)
+#define ETR_SG_PTRS_PER_PAGE		(ETR_SG_PAGE_SIZE / sizeof(sgte_t))
+#define ETR_SG_PTRS_PER_SYSPAGE		(PAGE_SIZE / sizeof(sgte_t))
+
+#define ETR_SG_ET_MASK			0x3
+#define ETR_SG_ET_LAST			0x1
+#define ETR_SG_ET_NORMAL		0x2
+#define ETR_SG_ET_LINK			0x3
+
+#define ETR_SG_ADDR_SHIFT		4
+
+#define ETR_SG_ENTRY(addr, type) \
+	(sgte_t)((((addr) >> ETR_SG_PAGE_SHIFT) << ETR_SG_ADDR_SHIFT) | \
+		 (type & ETR_SG_ET_MASK))
+
+#define ETR_SG_ADDR(entry) \
+	(((dma_addr_t)(entry) >> ETR_SG_ADDR_SHIFT) << ETR_SG_PAGE_SHIFT)
+#define ETR_SG_ET(entry)		((entry) & ETR_SG_ET_MASK)
+
+/*
+ * struct etr_sg_table : ETR SG Table
+ * @sg_table:		Generic SG Table holding the data/table pages.
+ * @hwaddr:		hwaddress used by the TMC, which is the base
+ *			address of the table.
+ */
+struct etr_sg_table {
+	struct tmc_sg_table	*sg_table;
+	dma_addr_t		hwaddr;
+};
+
 /* Generic functions */
 void tmc_wait_for_tmcready(struct tmc_drvdata *drvdata);
 void tmc_flush_and_stop(struct tmc_drvdata *drvdata);
@@ -268,9 +397,24 @@ ssize_t tmc_etb_get_sysfs_trace(struct tmc_drvdata *drvdata,
 /* ETR functions */
 int tmc_read_prepare_etr(struct tmc_drvdata *drvdata);
 int tmc_read_unprepare_etr(struct tmc_drvdata *drvdata);
+void tmc_free_etr_buf(struct etr_buf *etr_buf);
+void __tmc_etr_disable_to_bam(struct tmc_drvdata *drvdata);
+void tmc_etr_bam_disable(struct tmc_drvdata *drvdata);
+void usb_notifier(void *priv, unsigned int event, struct qdss_request *d_req,
+		  struct usb_qdss_ch *ch);
+int tmc_etr_bam_init(struct amba_device *adev,
+		     struct tmc_drvdata *drvdata);
+extern struct byte_cntr *byte_cntr_init(struct amba_device *adev,
+					struct tmc_drvdata *drvdata);
+int tmc_etr_enable_hw(struct tmc_drvdata *drvdata, struct etr_buf *etr_buf);
+void tmc_etr_disable_hw(struct tmc_drvdata *drvdata);
 extern const struct coresight_ops tmc_etr_cs_ops;
 ssize_t tmc_etr_get_sysfs_trace(struct tmc_drvdata *drvdata,
 				loff_t pos, size_t len, char **bufpp);
+ssize_t tmc_etr_buf_get_data(struct etr_buf *etr_buf,
+				u64 offset, size_t len, char **bufpp);
+int tmc_etr_switch_mode(struct tmc_drvdata *drvdata, const char *out_mode);
+extern const struct csr_set_atid_op csr_atid_ops;
 
 
 #define TMC_REG_PAIR(name, lo_off, hi_off)				\
@@ -306,7 +450,7 @@ static inline bool tmc_etr_has_cap(struct tmc_drvdata *drvdata, u32 cap)
 	return !!(drvdata->etr_caps & cap);
 }
 
-struct tmc_sg_table *tmc_alloc_sg_table(struct device *dev,
+struct tmc_sg_table *tmc_alloc_sg_table(struct tmc_drvdata *drvdata,
 					int node,
 					int nr_tpages,
 					int nr_dpages,

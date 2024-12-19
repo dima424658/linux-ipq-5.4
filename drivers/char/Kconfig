@@ -497,6 +497,7 @@ config UV_MMTIMER
 	  UV system timer.
 
 source "drivers/char/tpm/Kconfig"
+source "drivers/char/diag/Kconfig"
 
 config TELCLOCK
 	tristate "Telecom clock driver for ATCA SBC"

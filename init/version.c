@@ -52,4 +52,16 @@ const char linux_proc_banner[] =
 	" (" LINUX_COMPILE_BY "@" LINUX_COMPILE_HOST ")"
 	" (" LINUX_COMPILER ") %s\n";
 
+#ifdef CONFIG_QCA_MINIDUMP
+const char *linux_banner_ptr = linux_banner;
+uint64_t linux_banner_size = sizeof(linux_banner);
+
+void minidump_get_linux_buf_info(uint64_t *plinux_buf, uint64_t *plinux_buf_len)
+{
+	*plinux_buf = (uint64_t)((uintptr_t)linux_banner_ptr);
+	*plinux_buf_len = linux_banner_size;
+}
+EXPORT_SYMBOL(minidump_get_linux_buf_info);
+#endif /* CONFIG_QCA_MINIDUMP */
+
 BUILD_SALT;

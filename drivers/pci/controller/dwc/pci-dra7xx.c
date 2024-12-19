@@ -209,7 +209,6 @@ static int dra7xx_pcie_host_init(struct pcie_port *pp)
 
 	dra7xx_pcie_establish_link(pci);
 	dw_pcie_wait_for_link(pci);
-	dw_pcie_msi_init(pp);
 	dra7xx_pcie_enable_interrupts(dra7xx);
 
 	return 0;
@@ -474,6 +473,9 @@ static int __init dra7xx_add_pcie_port(struct dra7xx_pcie *dra7xx,
 		dev_err(dev, "failed to request irq\n");
 		return ret;
 	}
+
+	/* MSI IRQ is muxed */
+	pp->msi_irq = -ENODEV;
 
 	ret = dra7xx_pcie_init_irq_domain(pp);
 	if (ret < 0)

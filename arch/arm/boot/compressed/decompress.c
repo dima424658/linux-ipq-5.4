@@ -47,11 +47,14 @@ extern char * strchrnul(const char *, int);
 #endif
 
 #ifdef CONFIG_KERNEL_XZ
+#ifndef CONFIG_KASAN
 /* Prevent KASAN override of string helpers in decompressor */
 #undef memmove
 #define memmove memmove
 #undef memcpy
 #define memcpy memcpy
+#endif
+
 #include "../../../../lib/decompress_unxz.c"
 #endif
 

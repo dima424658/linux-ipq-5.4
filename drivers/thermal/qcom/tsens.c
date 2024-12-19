@@ -12,6 +12,17 @@
 #include <linux/thermal.h>
 #include "tsens.h"
 
+static int tsens_panic_notify(void *data)
+{
+	const struct tsens_sensor *s = data;
+	struct tsens_priv *priv = s->priv;
+
+	if (priv->ops->panic_notify)
+		return priv->ops->panic_notify(priv, s->id);
+
+	return -ENOTSUPP;
+}
+
 static int tsens_get_temp(void *data, int *temp)
 {
 	const struct tsens_sensor *s = data;
@@ -22,7 +33,7 @@ static int tsens_get_temp(void *data, int *temp)
 
 static int tsens_get_trend(void *data, int trip, enum thermal_trend *trend)
 {
-	const struct tsens_sensor *s = data;
+	struct tsens_sensor *s = data;
 	struct tsens_priv *priv = s->priv;
 
 	if (priv->ops->get_trend)
@@ -31,9 +42,10 @@ static int tsens_get_trend(void *data, int trip, enum thermal_trend *trend)
 	return -ENOTSUPP;
 }
 
-static int  __maybe_unused tsens_suspend(struct device *dev)
+static int  __maybe_unused tsens_suspend(struct device *data)
 {
-	struct tsens_priv *priv = dev_get_drvdata(dev);
+	struct tsens_sensor *s = (struct tsens_sensor *)data;
+	struct tsens_priv *priv = s->priv;
 
 	if (priv->ops && priv->ops->suspend)
 		return priv->ops->suspend(priv);
@@ -41,12 +53,47 @@ static int  __maybe_unused tsens_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused tsens_resume(struct device *dev)
+static int __maybe_unused tsens_resume(struct device *data)
 {
-	struct tsens_priv *priv = dev_get_drvdata(dev);
+	struct tsens_sensor *s = (struct tsens_sensor *)data;
+	struct tsens_priv *priv = s->priv;
 
 	if (priv->ops && priv->ops->resume)
 		return priv->ops->resume(priv);
+
+	return 0;
+}
+
+static int  __maybe_unused tsens_set_trip_temp(void *data, int trip, int temp)
+{
+	struct tsens_sensor *s = data;
+	struct tsens_priv *priv = s->priv;
+
+	if (priv->ops && priv->ops->set_trip_temp)
+		return priv->ops->set_trip_temp(s, trip, temp);
+
+	return 0;
+}
+
+static int __maybe_unused tsens_activate_trip_type(void *data, int trip,
+					enum thermal_trip_activation_mode mode)
+{
+	struct tsens_sensor *s = data;
+	struct tsens_priv *priv = s->priv;
+
+	if (priv->ops && priv->ops->set_trip_activate)
+		return priv->ops->set_trip_activate(s, trip, mode);
+
+	return 0;
+}
+
+static int __maybe_unused tsens_set_trips(void *data, int low, int high)
+{
+	struct tsens_sensor *s = data;
+	struct tsens_priv *priv = s->priv;
+
+	if (priv->ops && priv->ops->set_temp_trips)
+		return priv->ops->set_temp_trips(s, low, high);
 
 	return 0;
 }
@@ -64,6 +111,21 @@ static const struct of_device_id tsens_table[] = {
 		.compatible = "qcom,msm8996-tsens",
 		.data = &data_8996,
 	}, {
+		.compatible = "qcom,ipq8074-tsens",
+		.data = &data_ipq807x,
+	}, {
+		.compatible = "qcom,ipq6018-tsens",
+		.data = &data_ipq807x,
+	}, {
+		.compatible = "qcom,ipq5018-tsens",
+		.data = &data_ipq5018,
+	}, {
+		.compatible = "qcom,ipq9574-tsens",
+		.data = &data_ipq807x,
+	}, {
+		.compatible = "qcom,ipq5332-tsens",
+		.data = &data_ipq807x,
+	}, {
 		.compatible = "qcom,tsens-v1",
 		.data = &data_tsens_v1,
 	}, {
@@ -76,7 +138,11 @@ MODULE_DEVICE_TABLE(of, tsens_table);
 
 static const struct thermal_zone_of_device_ops tsens_of_ops = {
 	.get_temp = tsens_get_temp,
+	.panic_notify = tsens_panic_notify,
 	.get_trend = tsens_get_trend,
+	.set_trip_temp = tsens_set_trip_temp,
+	.set_trip_activate = tsens_activate_trip_type,
+	.set_trips = tsens_set_trips,
 };
 
 static int tsens_register(struct tsens_priv *priv)
@@ -120,7 +186,7 @@ static int tsens_probe(struct platform_device *pdev)
 	if (id)
 		data = id->data;
 	else
-		data = &data_8960;
+		return -EINVAL;
 
 	num_sensors = data->num_sensors;
 
@@ -141,6 +207,9 @@ static int tsens_probe(struct platform_device *pdev)
 	priv->dev = dev;
 	priv->num_sensors = num_sensors;
 	priv->ops = data->ops;
+
+	priv->tsens_irq = platform_get_irq(pdev, 0);
+
 	for (i = 0;  i < priv->num_sensors; i++) {
 		if (data->hw_ids)
 			priv->sensor[i].hw_id = data->hw_ids[i];
@@ -155,7 +224,8 @@ static int tsens_probe(struct platform_device *pdev)
 
 	ret = priv->ops->init(priv);
 	if (ret < 0) {
-		dev_err(dev, "tsens init failed\n");
+		if (ret != -EPROBE_DEFER)
+			dev_err(dev, "tsens init failed\n");
 		return ret;
 	}
 

@@ -1580,8 +1580,8 @@ static int q6v5_probe(struct platform_device *pdev)
 	qproc->version = desc->version;
 	qproc->need_mem_protection = desc->need_mem_protection;
 
-	ret = qcom_q6v5_init(&qproc->q6v5, pdev, rproc, MPSS_CRASH_REASON_SMEM,
-			     qcom_msa_handover);
+	ret = qcom_q6v5_init(&qproc->q6v5, pdev, rproc, QCOM_SMEM_HOST_ANY,
+			     MPSS_CRASH_REASON_SMEM, qcom_msa_handover);
 	if (ret)
 		goto detach_proxy_pds;
 

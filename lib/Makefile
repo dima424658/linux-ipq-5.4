@@ -3,6 +3,17 @@
 # Makefile for some libs needed in the kernel.
 #
 
+KBUILD_CFLAGS += -Werror
+ifdef CONFIG_JFFS2_ZLIB
+	CONFIG_ZLIB_INFLATE:=y
+	CONFIG_ZLIB_DEFLATE:=y
+endif
+
+ifdef CONFIG_JFFS2_LZMA
+	CONFIG_LZMA_DECOMPRESS:=y
+	CONFIG_LZMA_COMPRESS:=y
+endif
+
 ifdef CONFIG_FUNCTION_TRACER
 ORIG_CFLAGS := $(KBUILD_CFLAGS)
 KBUILD_CFLAGS = $(subst $(CC_FLAGS_FTRACE),,$(ORIG_CFLAGS))
@@ -118,6 +129,7 @@ obj-$(CONFIG_ASSOCIATIVE_ARRAY) += assoc_array.o
 obj-$(CONFIG_DEBUG_PREEMPT) += smp_processor_id.o
 obj-$(CONFIG_DEBUG_LIST) += list_debug.o
 obj-$(CONFIG_DEBUG_OBJECTS) += debugobjects.o
+obj-$(CONFIG_DEBUG_MEM_USAGE) += debug_mem_usage.o
 
 obj-$(CONFIG_BITREVERSE) += bitrev.o
 obj-$(CONFIG_PACKING)	+= packing.o
@@ -150,6 +162,8 @@ obj-$(CONFIG_ZSTD_COMPRESS) += zstd/
 obj-$(CONFIG_ZSTD_DECOMPRESS) += zstd/
 obj-$(CONFIG_XZ_DEC) += xz/
 obj-$(CONFIG_RAID6_PQ) += raid6/
+obj-$(CONFIG_LZMA_COMPRESS) += lzma/
+obj-$(CONFIG_LZMA_DECOMPRESS) += lzma/
 
 lib-$(CONFIG_DECOMPRESS_GZIP) += decompress_inflate.o
 lib-$(CONFIG_DECOMPRESS_BZIP2) += decompress_bunzip2.o
@@ -224,6 +238,10 @@ libfdt_files = fdt.o fdt_ro.o fdt_wip.o fdt_rw.o fdt_sw.o fdt_strerror.o \
 $(foreach file, $(libfdt_files), \
 	$(eval CFLAGS_$(file) = -I $(srctree)/scripts/dtc/libfdt))
 lib-$(CONFIG_LIBFDT) += $(libfdt_files)
+# The early kernel setup will attempt to read properties from the FDT which
+# may very well be in some memory area that is not kernel memory, leading
+# to problems when KASan tries to shadow these memory accesses.
+KASAN_SANITIZE_fdt.o := n
 
 obj-$(CONFIG_RBTREE_TEST) += rbtree_test.o
 obj-$(CONFIG_INTERVAL_TREE_TEST) += interval_tree_test.o
@@ -273,6 +291,7 @@ clean-files	+= oid_registry_data.c
 
 obj-$(CONFIG_UCS2_STRING) += ucs2_string.o
 obj-$(CONFIG_UBSAN) += ubsan.o
+obj-$(CONFIG_STOPWATCH) += stopwatch.o
 
 UBSAN_SANITIZE_ubsan.o := n
 KASAN_SANITIZE_ubsan.o := n

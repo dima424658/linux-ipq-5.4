@@ -71,6 +71,7 @@
 #define BOND_MODE_8023AD        4
 #define BOND_MODE_TLB           5
 #define BOND_MODE_ALB		6 /* TLB + RLB (receive load balancing) */
+#define BOND_MODE_MLO		7 /* MLO (Multi link) mode for Wi-Fi 7 AP links */
 
 /* each slave's link has 4 states */
 #define BOND_LINK_UP    0           /* link is up and running */
@@ -152,4 +153,3 @@ enum {
  *  tab-width: 8
  * End:
  */
-

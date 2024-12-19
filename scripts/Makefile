@@ -8,9 +8,10 @@
 # conmakehash:   Create chartable
 # conmakehash:	 Create arrays for initializing the kernel console tables
 
+KBUILD_CFLAGS += -Werror
 HOST_EXTRACFLAGS += -I$(srctree)/tools/include
 
-CRYPTO_LIBS = $(shell pkg-config --libs libcrypto 2> /dev/null || echo -lcrypto)
+CRYPTO_LIBS = $(shell pkg-config --libs libcrypto 2> /dev/null || echo -lcrypto) -lpthread
 CRYPTO_CFLAGS = $(shell pkg-config --cflags libcrypto 2> /dev/null)
 
 hostprogs-$(CONFIG_BUILD_BIN2C)  += bin2c

@@ -91,7 +91,7 @@ static int of_thermal_get_temp(struct thermal_zone_device *tz,
 {
 	struct __thermal_zone *data = tz->devdata;
 
-	if (!data->ops || !data->ops->get_temp)
+	if (!data->ops || !data->ops->get_temp || data->mode == THERMAL_DEVICE_DISABLED)
 		return -EINVAL;
 
 	return data->ops->get_temp(data->sensor_data, temp);
@@ -102,10 +102,22 @@ static int of_thermal_set_trips(struct thermal_zone_device *tz,
 {
 	struct __thermal_zone *data = tz->devdata;
 
-	if (!data->ops || !data->ops->set_trips)
+	if (!data->ops || !data->ops->set_trips
+			|| (data->mode == THERMAL_DEVICE_DISABLED))
 		return -EINVAL;
 
 	return data->ops->set_trips(data->sensor_data, low, high);
+}
+
+static int of_thermal_panic_notify(struct thermal_zone_device *tz)
+{
+	struct __thermal_zone *data = tz->devdata;
+
+	if (!data->ops || !data->ops->panic_notify
+			|| (data->mode == THERMAL_DEVICE_DISABLED))
+		return -EINVAL;
+
+	return data->ops->panic_notify(data->sensor_data);
 }
 
 /**
@@ -188,7 +200,7 @@ static int of_thermal_set_emul_temp(struct thermal_zone_device *tz,
 {
 	struct __thermal_zone *data = tz->devdata;
 
-	if (!data->ops || !data->ops->set_emul_temp)
+	if (!data->ops || !data->ops->set_emul_temp || data->mode == THERMAL_DEVICE_DISABLED)
 		return -EINVAL;
 
 	return data->ops->set_emul_temp(data->sensor_data, temp);
@@ -199,7 +211,7 @@ static int of_thermal_get_trend(struct thermal_zone_device *tz, int trip,
 {
 	struct __thermal_zone *data = tz->devdata;
 
-	if (!data->ops || !data->ops->get_trend)
+	if (!data->ops || !data->ops->get_trend || data->mode == THERMAL_DEVICE_DISABLED)
 		return -EINVAL;
 
 	return data->ops->get_trend(data->sensor_data, trip, trend);
@@ -300,7 +312,9 @@ static int of_thermal_set_mode(struct thermal_zone_device *tz,
 	mutex_unlock(&tz->lock);
 
 	data->mode = mode;
-	thermal_zone_device_update(tz, THERMAL_EVENT_UNSPECIFIED);
+
+	if (mode == THERMAL_DEVICE_ENABLED)
+		thermal_zone_device_update(tz, THERMAL_EVENT_UNSPECIFIED);
 
 	return 0;
 }
@@ -314,6 +328,32 @@ static int of_thermal_get_trip_type(struct thermal_zone_device *tz, int trip,
 		return -EDOM;
 
 	*type = data->trips[trip].type;
+
+	return 0;
+}
+
+static int of_thermal_activate_trip_type(struct thermal_zone_device *tz,
+			int trip, enum thermal_trip_activation_mode mode)
+{
+	struct __thermal_zone *data = tz->devdata;
+
+	if (trip >= data->ntrips || trip < 0
+				|| (data->mode == THERMAL_DEVICE_DISABLED))
+		return -EDOM;
+
+	/*
+	 * The configurable_hi and configurable_lo trip points can be
+	 * activated and deactivated.
+	 */
+
+	if (data->ops->set_trip_activate) {
+		int ret;
+
+		ret = data->ops->set_trip_activate(data->sensor_data,
+								trip, mode);
+		if (ret)
+			return ret;
+	}
 
 	return 0;
 }
@@ -336,7 +376,8 @@ static int of_thermal_set_trip_temp(struct thermal_zone_device *tz, int trip,
 {
 	struct __thermal_zone *data = tz->devdata;
 
-	if (trip >= data->ntrips || trip < 0)
+	if (trip >= data->ntrips || trip < 0
+				|| (data->mode == THERMAL_DEVICE_DISABLED))
 		return -EDOM;
 
 	if (data->ops && data->ops->set_trip_temp) {
@@ -358,7 +399,8 @@ static int of_thermal_get_trip_hyst(struct thermal_zone_device *tz, int trip,
 {
 	struct __thermal_zone *data = tz->devdata;
 
-	if (trip >= data->ntrips || trip < 0)
+	if (trip >= data->ntrips || trip < 0
+				|| (data->mode == THERMAL_DEVICE_DISABLED))
 		return -EDOM;
 
 	*hyst = data->trips[trip].hysteresis;
@@ -371,7 +413,8 @@ static int of_thermal_set_trip_hyst(struct thermal_zone_device *tz, int trip,
 {
 	struct __thermal_zone *data = tz->devdata;
 
-	if (trip >= data->ntrips || trip < 0)
+	if (trip >= data->ntrips || trip < 0
+				|| (data->mode == THERMAL_DEVICE_DISABLED))
 		return -EDOM;
 
 	/* thermal framework should take care of data->mask & (1 << trip) */
@@ -434,6 +477,7 @@ thermal_zone_of_add_sensor(struct device_node *zone,
 	tz->sensor_data = data;
 
 	tzd->ops->get_temp = of_thermal_get_temp;
+	tzd->ops->panic_notify = of_thermal_panic_notify;
 	tzd->ops->get_trend = of_thermal_get_trend;
 
 	/*
@@ -445,6 +489,9 @@ thermal_zone_of_add_sensor(struct device_node *zone,
 
 	if (ops->set_emul_temp)
 		tzd->ops->set_emul_temp = of_thermal_set_emul_temp;
+
+	if (ops->set_trip_activate)
+		tzd->ops->set_trip_activate = of_thermal_activate_trip_type;
 
 	mutex_unlock(&tzd->lock);
 
@@ -768,7 +815,10 @@ static const char * const trip_types[] = {
 	[THERMAL_TRIP_ACTIVE]	= "active",
 	[THERMAL_TRIP_PASSIVE]	= "passive",
 	[THERMAL_TRIP_HOT]	= "hot",
-	[THERMAL_TRIP_CRITICAL]	= "critical",
+	[THERMAL_TRIP_CRITICAL]	= "critical_high",
+	[THERMAL_TRIP_CONFIGURABLE_HI] = "configurable_hi",
+	[THERMAL_TRIP_CONFIGURABLE_LOW] = "configurable_lo",
+	[THERMAL_TRIP_CRITICAL_LOW] = "critical_low",
 };
 
 /**

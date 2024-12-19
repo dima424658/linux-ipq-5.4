@@ -186,6 +186,8 @@ enum dma_ctrl_flags {
 	DMA_PREP_FENCE = (1 << 5),
 	DMA_CTRL_REUSE = (1 << 6),
 	DMA_PREP_CMD = (1 << 7),
+	DMA_PREP_LOCK = (1 << 8),
+	DMA_PREP_UNLOCK = (1 << 9),
 };
 
 /**

@@ -596,6 +596,8 @@ struct sdhci_host {
 #define SDHCI_TUNING_MODE_1	0
 #define SDHCI_TUNING_MODE_2	1
 #define SDHCI_TUNING_MODE_3	2
+	bool is_crypto_en;
+	bool crypto_reset_reqd;
 	/* Delay (ms) between tuning commands */
 	int			tuning_delay;
 	int			tuning_loop_count;
@@ -642,6 +644,10 @@ struct sdhci_ops {
 	unsigned int    (*get_ro)(struct sdhci_host *host);
 	void		(*reset)(struct sdhci_host *host, u8 mask);
 	int	(*platform_execute_tuning)(struct sdhci_host *host, u32 opcode);
+	int	(*crypto_engine_cfg)(struct sdhci_host *host,
+					struct mmc_request *mrq, u32 slot);
+	int	(*crypto_engine_reset)(struct sdhci_host *host);
+	void	(*crypto_cfg_reset)(struct sdhci_host *host, unsigned int slot);
 	void	(*set_uhs_signaling)(struct sdhci_host *host, unsigned int uhs);
 	void	(*hw_reset)(struct sdhci_host *host);
 	void    (*adma_workaround)(struct sdhci_host *host, u32 intmask);

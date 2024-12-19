@@ -40,9 +40,12 @@ enum tsens_ver {
 struct tsens_sensor {
 	struct tsens_priv		*priv;
 	struct thermal_zone_device	*tzd;
+	struct work_struct		notify_work;
 	int				offset;
 	unsigned int			id;
 	unsigned int			hw_id;
+	int				calib_data;
+	int				calib_data_backup;
 	int				slope;
 	u32				status;
 };
@@ -57,6 +60,8 @@ struct tsens_sensor {
  * @suspend: Function to suspend the tsens device
  * @resume: Function to resume the tsens device
  * @get_trend: Function to get the thermal/temp trend
+ * @set_trip_temp: Function to set trip temp
+ * @set_trip_activate: Function to activate trip points
  */
 struct tsens_ops {
 	/* mandatory callbacks */
@@ -64,11 +69,15 @@ struct tsens_ops {
 	int (*calibrate)(struct tsens_priv *priv);
 	int (*get_temp)(struct tsens_priv *priv, int i, int *temp);
 	/* optional callbacks */
+	int (*panic_notify)(struct tsens_priv *, int);
 	int (*enable)(struct tsens_priv *priv, int i);
 	void (*disable)(struct tsens_priv *priv);
 	int (*suspend)(struct tsens_priv *priv);
 	int (*resume)(struct tsens_priv *priv);
 	int (*get_trend)(struct tsens_priv *priv, int i, enum thermal_trend *trend);
+	int (*set_trip_temp)(void *, int, int);
+	int (*set_trip_activate)(void *, int, enum thermal_trip_activation_mode);
+	int (*set_temp_trips)(void *, int, int);
 };
 
 #define REG_FIELD_FOR_EACH_SENSOR11(_name, _offset, _startbit, _stopbit) \
@@ -300,6 +309,7 @@ struct tsens_context {
 struct tsens_priv {
 	struct device			*dev;
 	u32				num_sensors;
+	u32				tsens_irq;
 	struct regmap			*tm_map;
 	struct regmap			*srot_map;
 	u32				tm_offset;
@@ -308,6 +318,8 @@ struct tsens_priv {
 	const struct tsens_features	*feat;
 	const struct reg_field		*fields;
 	const struct tsens_ops		*ops;
+	struct work_struct		tsens_work;
+	void __iomem			*iomem_base;
 	struct tsens_sensor		sensor[0];
 };
 
@@ -326,7 +338,14 @@ extern const struct tsens_plat_data data_8916, data_8974;
 /* TSENS v1 targets */
 extern const struct tsens_plat_data data_tsens_v1;
 
+/* TSENS target */
+extern const struct tsens_ops ops_ipq5018;
+extern const struct tsens_plat_data data_ipq5018;
+
 /* TSENS v2 targets */
 extern const struct tsens_plat_data data_8996, data_tsens_v2;
 
+/* TSENS target */
+extern const struct tsens_ops ops_ipq807x;
+extern const struct tsens_plat_data data_ipq807x;
 #endif /* __QCOM_TSENS_H__ */

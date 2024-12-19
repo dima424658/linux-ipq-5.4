@@ -33,7 +33,7 @@ config CRYPTO_FIPS
 	  this is.
 
 config CRYPTO_ALGAPI
-	tristate
+	tristate "ALGAPI"
 	select CRYPTO_ALGAPI2
 	help
 	  This option provides the API for cryptographic algorithms.
@@ -42,7 +42,7 @@ config CRYPTO_ALGAPI2
 	tristate
 
 config CRYPTO_AEAD
-	tristate
+	tristate "AEAD"
 	select CRYPTO_AEAD2
 	select CRYPTO_ALGAPI
 
@@ -53,7 +53,7 @@ config CRYPTO_AEAD2
 	select CRYPTO_RNG2
 
 config CRYPTO_BLKCIPHER
-	tristate
+	tristate "BLKCIPHER"
 	select CRYPTO_BLKCIPHER2
 	select CRYPTO_ALGAPI
 
@@ -63,7 +63,7 @@ config CRYPTO_BLKCIPHER2
 	select CRYPTO_RNG2
 
 config CRYPTO_HASH
-	tristate
+	tristate "HASH"
 	select CRYPTO_HASH2
 	select CRYPTO_ALGAPI
 
@@ -72,7 +72,7 @@ config CRYPTO_HASH2
 	select CRYPTO_ALGAPI2
 
 config CRYPTO_RNG
-	tristate
+	tristate "RNG"
 	select CRYPTO_RNG2
 	select CRYPTO_ALGAPI
 
@@ -120,13 +120,13 @@ config CRYPTO_MANAGER
 	  cbc(aes).
 
 config CRYPTO_MANAGER2
-	def_tristate CRYPTO_MANAGER || (CRYPTO_MANAGER!=n && CRYPTO_ALGAPI=y)
-	select CRYPTO_AEAD2
-	select CRYPTO_HASH2
-	select CRYPTO_BLKCIPHER2
-	select CRYPTO_AKCIPHER2
-	select CRYPTO_KPP2
-	select CRYPTO_ACOMP2
+	def_tristate CRYPTO_MANAGER || (CRYPTO_MANAGER!=n && CRYPTO_ALGAPI=y && !CRYPTO_MANAGER_DISABLE_TESTS)
+	select CRYPTO_AEAD2 if !CRYPTO_MANAGER_DISABLE_TESTS
+	select CRYPTO_HASH2 if !CRYPTO_MANAGER_DISABLE_TESTS
+	select CRYPTO_BLKCIPHER2 if !CRYPTO_MANAGER_DISABLE_TESTS
+	select CRYPTO_AKCIPHER2 if !CRYPTO_MANAGER_DISABLE_TESTS
+	select CRYPTO_KPP2 if !CRYPTO_MANAGER_DISABLE_TESTS
+	select CRYPTO_ACOMP2 if !CRYPTO_MANAGER_DISABLE_TESTS
 
 config CRYPTO_USER
 	tristate "Userspace cryptographic algorithm configuration"
@@ -136,14 +136,14 @@ config CRYPTO_USER
 	  Userspace configuration for cryptographic instantiations such as
 	  cbc(aes).
 
-if CRYPTO_MANAGER2
-
 config CRYPTO_MANAGER_DISABLE_TESTS
 	bool "Disable run-time self tests"
 	default y
 	help
 	  Disable run-time self tests that normally take place at
 	  algorithm registration.
+
+if CRYPTO_MANAGER2
 
 config CRYPTO_MANAGER_EXTRA_TESTS
 	bool "Enable extra run-time crypto self tests"
@@ -209,6 +209,70 @@ config CRYPTO_TEST
 	select CRYPTO_MANAGER
 	help
 	  Quick & dirty crypto test module.
+
+config CRYPTO_DISABLE_AUTH_SPLIT_TESTS
+	bool "Disable test cases where authentication data is split between buffers"
+	default y
+	help
+	  Disable authentication split tests
+
+config CRYPTO_DISABLE_HW_UNSUPPORTED_TESTS
+	bool "Disable test cases not supported by HW"
+	default y
+	help
+	  Disable hw unsupported test cases
+
+config CRYPTO_DISABLE_AHASH_LARGE_KEY_TEST
+	bool "Disable AHASH test cases with auth key greater than block size"
+	default y
+	help
+	  Disable large key ahash tests
+
+config CRYPTO_DISABLE_AHASH_TYPE1_TESTS
+	bool "Disable AHASH type 1 test cases"
+	default y
+	help
+	  Disable AHASH type 1 tests
+
+config CRYPTO_DISABLE_AHASH_TYPE2_TESTS
+	bool "Disable AHASH type 2 test cases"
+	default y
+	help
+	  Disable AHASH type 2 tests
+
+config CRYPTO_DISABLE_AHASH_TYPE3_TESTS
+	bool "Disable AHASH type 3 test cases"
+	default y
+	help
+	  Disable AHASH type 3 tests
+
+config CRYPTO_DISABLE_AES192_TEST
+	bool "Disable testcases with 192 key length"
+	default y
+	depends on CRYPTO_TEST
+	help
+	  Disable testcases with 192 key length
+
+config CRYPTO_NO_ZERO_LEN_HASH
+	bool "Disable support for zero data length cases"
+	default y
+	depends on CRYPTO_TEST
+	help
+	  Disable support for zero data length cases
+
+config CRYPTO_NO_AES_CTR_UNEVEN_DATA_LEN_SUPPORT
+	bool "Disable support for uneven data length test cases"
+	default y
+	depends on CRYPTO_TEST
+	help
+	  Disable support for uneven data length cases
+
+config CRYPTO_NO_AES_XTS_ZERO_KEY_SUPPORT
+	bool "Disable support for zero key test cases"
+	default y
+	depends on CRYPTO_TEST
+	help
+	  Disable support for zero key test cases
 
 config CRYPTO_SIMD
 	tristate
@@ -1151,7 +1215,7 @@ config CRYPTO_ANUBIS
 	  <http://www.larc.usp.br/~pbarreto/AnubisPage.html>
 
 config CRYPTO_LIB_ARC4
-	tristate
+	tristate "ARC4 cipher library"
 
 config CRYPTO_ARC4
 	tristate "ARC4 cipher algorithm"

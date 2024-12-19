@@ -196,9 +196,6 @@ static int histb_pcie_host_init(struct pcie_port *pp)
 {
 	histb_pcie_establish_link(pp);
 
-	if (IS_ENABLED(CONFIG_PCI_MSI))
-		dw_pcie_msi_init(pp);
-
 	return 0;
 }
 
@@ -398,14 +395,6 @@ static int histb_pcie_probe(struct platform_device *pdev)
 	if (IS_ERR(hipcie->bus_reset)) {
 		dev_err(dev, "couldn't get bus reset\n");
 		return PTR_ERR(hipcie->bus_reset);
-	}
-
-	if (IS_ENABLED(CONFIG_PCI_MSI)) {
-		pp->msi_irq = platform_get_irq_byname(pdev, "msi");
-		if (pp->msi_irq < 0) {
-			dev_err(dev, "Failed to get MSI IRQ\n");
-			return pp->msi_irq;
-		}
 	}
 
 	hipcie->phy = devm_phy_get(dev, "phy");

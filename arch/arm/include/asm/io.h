@@ -96,6 +96,18 @@ static inline void __raw_writel(u32 val, volatile void __iomem *addr)
 		     : : "Qo" (*(volatile u32 __force *)addr), "r" (val));
 }
 
+#define __raw_writeq __raw_writeq
+static inline void __raw_writeq(u64 val, volatile void __iomem *addr)
+{
+	register u64 v asm ("r2");
+
+	v = val;
+
+	asm volatile("strd %1, %0"
+			: "+Qo" (*(volatile u64 __force *)addr)
+			: "r" (v));
+}
+
 #define __raw_readb __raw_readb
 static inline u8 __raw_readb(const volatile void __iomem *addr)
 {
@@ -113,6 +125,17 @@ static inline u32 __raw_readl(const volatile void __iomem *addr)
 	asm volatile("ldr %0, %1"
 		     : "=r" (val)
 		     : "Qo" (*(volatile u32 __force *)addr));
+	return val;
+}
+
+#define __raw_readq __raw_readq
+static inline u64 __raw_readq(const volatile void __iomem *addr)
+{
+	register u64 val asm ("r2");
+
+	asm volatile("ldrd %1, %0"
+			: "+Qo" (*(volatile u64 __force *)addr),
+			"=r" (val));
 	return val;
 }
 
@@ -293,18 +316,23 @@ extern void _memset_io(volatile void __iomem *, int, size_t);
 					__raw_readw(c)); __r; })
 #define readl_relaxed(c) ({ u32 __r = le32_to_cpu((__force __le32) \
 					__raw_readl(c)); __r; })
+#define readq_relaxed(c) ({ u64 __r = le64_to_cpu((__force __le64) \
+					__raw_readq(c)); __r; })
 
 #define writeb_relaxed(v,c)	__raw_writeb(v,c)
 #define writew_relaxed(v,c)	__raw_writew((__force u16) cpu_to_le16(v),c)
 #define writel_relaxed(v,c)	__raw_writel((__force u32) cpu_to_le32(v),c)
+#define writeq_relaxed(v,c)     __raw_writeq((__force u64) cpu_to_le64(v),c)
 
 #define readb(c)		({ u8  __v = readb_relaxed(c); __iormb(); __v; })
 #define readw(c)		({ u16 __v = readw_relaxed(c); __iormb(); __v; })
 #define readl(c)		({ u32 __v = readl_relaxed(c); __iormb(); __v; })
+#define readq(c)                ({ u64 __v = readq_relaxed(c); __iormb(); __v; })
 
 #define writeb(v,c)		({ __iowmb(); writeb_relaxed(v,c); })
 #define writew(v,c)		({ __iowmb(); writew_relaxed(v,c); })
 #define writel(v,c)		({ __iowmb(); writel_relaxed(v,c); })
+#define writeq(v,c)             ({ __iowmb(); writeq_relaxed(v,c); })
 
 #define readsb(p,d,l)		__raw_readsb(p,d,l)
 #define readsw(p,d,l)		__raw_readsw(p,d,l)

@@ -33,41 +33,41 @@ icache_size:
  * processor.  We fix this by performing an invalidate, rather than a
  * clean + invalidate, before jumping into the kernel.
  *
- * This function is cloned from arch/arm/mach-tegra/headsmp.S, and needs
- * to be called for both secondary cores startup and primary core resume
- * procedures.
+ * This function needs to be called for both secondary cores startup and
+ * primary core resume procedures.
  */
 ENTRY(v7_invalidate_l1)
-       mov     r0, #0
-       mcr     p15, 2, r0, c0, c0, 0
-       mrc     p15, 1, r0, c0, c0, 0
+	mov	r0, #0
+	mcr	p15, 2, r0, c0, c0, 0	@ select L1 data cache in CSSELR
+	isb
+	mrc	p15, 1, r0, c0, c0, 0	@ read cache geometry from CCSIDR
 
-       movw    r1, #0x7fff
-       and     r2, r1, r0, lsr #13
+	movw	r3, #0x3ff
+	and	r3, r3, r0, lsr #3	@ 'Associativity' in CCSIDR[12:3]
+	clz	r1, r3			@ WayShift
+	mov	r2, #1
+	mov	r3, r3, lsl r1		@ NumWays-1 shifted into bits [31:...]
+	movs	r1, r2, lsl r1		@ #1 shifted left by same amount
+	moveq	r1, #1			@ r1 needs value > 0 even if only 1 way
 
-       movw    r1, #0x3ff
+	and	r2, r0, #0x7
+	add	r2, r2, #4		@ SetShift
 
-       and     r3, r1, r0, lsr #3      @ NumWays - 1
-       add     r2, r2, #1              @ NumSets
+1:	movw	ip, #0x7fff
+	and	r0, ip, r0, lsr #13	@ 'NumSets' in CCSIDR[27:13]
 
-       and     r0, r0, #0x7
-       add     r0, r0, #4      @ SetShift
-
-       clz     r1, r3          @ WayShift
-       add     r4, r3, #1      @ NumWays
-1:     sub     r2, r2, #1      @ NumSets--
-       mov     r3, r4          @ Temp = NumWays
-2:     subs    r3, r3, #1      @ Temp--
-       mov     r5, r3, lsl r1
-       mov     r6, r2, lsl r0
-       orr     r5, r5, r6      @ Reg = (Temp<<WayShift)|(NumSets<<SetShift)
-       mcr     p15, 0, r5, c7, c6, 2
-       bgt     2b
-       cmp     r2, #0
-       bgt     1b
-       dsb     st
-       isb
-       ret     lr
+2:	mov	ip, r0, lsl r2		@ NumSet << SetShift
+	orr	ip, ip, r3		@ Reg = (Temp<<WayShift)|(NumSets<<SetShift)
+	mcr	p15, 0, ip, c7, c6, 2
+	subs	r0, r0, #1		@ Set--
+	bpl	2b
+	subs	r3, r3, r1		@ Way--
+	bcc	3f
+	mrc	p15, 1, r0, c0, c0, 0	@ re-read cache geometry from CCSIDR
+	b	1b
+3:	dsb	st
+	isb
+	ret	lr
 ENDPROC(v7_invalidate_l1)
 
 /*
@@ -363,7 +363,7 @@ ENDPROC(v7_flush_kern_dcache_area)
  *	- start   - virtual start address of region
  *	- end     - virtual end address of region
  */
-v7_dma_inv_range:
+ENTRY(v7_dma_inv_range)
 	dcache_line_size r2, r3
 	sub	r3, r2, #1
 	tst	r0, r3
@@ -389,11 +389,47 @@ v7_dma_inv_range:
 ENDPROC(v7_dma_inv_range)
 
 /*
+ *	v7_dma_inv_range_no_dsb(start,end)
+ *
+ *	Invalidate the data cache within the specified region; we will
+ *	be performing a DMA operation in this region and we want to
+ *	purge old data in the cache. This API does not do
+ *	"data synchronization barrier". The caller is responsible to
+ *	do dsb after the transaction.
+ *
+ *	- start   - virtual start address of region
+ *	- end     - virtual end address of region
+ */
+ENTRY(v7_dma_inv_range_no_dsb)
+	dcache_line_size r2, r3
+	sub	r3, r2, #1
+	tst	r0, r3
+	bic	r0, r0, r3
+#ifdef CONFIG_ARM_ERRATA_764369
+	ALT_SMP(W(dsb))
+	ALT_UP(W(nop))
+#endif
+	mcrne	p15, 0, r0, c7, c14, 1		@ clean & invalidate D / U line
+	addne	r0, r0, r2
+
+	tst	r1, r3
+	bic	r1, r1, r3
+	mcrne	p15, 0, r1, c7, c14, 1		@ clean & invalidate D / U line
+	cmp	r0, r1
+1:
+	mcrlo	p15, 0, r0, c7, c6, 1		@ invalidate D / U line
+	addlo	r0, r0, r2
+	cmplo	r0, r1
+	blo	1b
+	ret	lr
+ENDPROC(v7_dma_inv_range_no_dsb)
+
+/*
  *	v7_dma_clean_range(start,end)
  *	- start   - virtual start address of region
  *	- end     - virtual end address of region
  */
-v7_dma_clean_range:
+ENTRY(v7_dma_clean_range)
 	dcache_line_size r2, r3
 	sub	r3, r2, #1
 	bic	r0, r0, r3
@@ -409,6 +445,31 @@ v7_dma_clean_range:
 	dsb	st
 	ret	lr
 ENDPROC(v7_dma_clean_range)
+
+/*
+ *	v7_dma_clean_range_no_dsb(start,end)
+ *
+ *	This API does not do "data synchronization barrier".
+ *	The caller is responsible to do dsb after the transaction.
+ *
+ *	- start   - virtual start address of region
+ *	- end     - virtual end address of region
+ */
+ENTRY(v7_dma_clean_range_no_dsb)
+	dcache_line_size r2, r3
+	sub	r3, r2, #1
+	bic	r0, r0, r3
+#ifdef CONFIG_ARM_ERRATA_764369
+	ALT_SMP(W(dsb))
+	ALT_UP(W(nop))
+#endif
+1:
+	mcr	p15, 0, r0, c7, c10, 1		@ clean D / U line
+	add	r0, r0, r2
+	cmp	r0, r1
+	blo	1b
+	ret	lr
+ENDPROC(v7_dma_clean_range_no_dsb)
 
 /*
  *	v7_dma_flush_range(start,end)
@@ -431,6 +492,31 @@ ENTRY(v7_dma_flush_range)
 	dsb	st
 	ret	lr
 ENDPROC(v7_dma_flush_range)
+
+/*
+ *	v7_dma_flush_range_no_dsb(start,end)
+ *
+ *	This API does not do "data synchronization barrier".
+ *	The caller is responsible to do dsb after the transaction.
+ *
+ *	- start   - virtual start address of region
+ *	- end     - virtual end address of region
+ */
+ENTRY(v7_dma_flush_range_no_dsb)
+	dcache_line_size r2, r3
+	sub	r3, r2, #1
+	bic	r0, r0, r3
+#ifdef CONFIG_ARM_ERRATA_764369
+	ALT_SMP(W(dsb))
+	ALT_UP(W(nop))
+#endif
+1:
+	mcr	p15, 0, r0, c7, c14, 1		@ clean & invalidate D / U line
+	add	r0, r0, r2
+	cmp	r0, r1
+	blo	1b
+	ret	lr
+ENDPROC(v7_dma_flush_range_no_dsb)
 
 /*
  *	dma_map_area(start, size, dir)
@@ -479,6 +565,8 @@ ENDPROC(v7_dma_unmap_area)
 
 	globl_equ	b15_dma_map_area,		v7_dma_map_area
 	globl_equ	b15_dma_unmap_area,		v7_dma_unmap_area
+	globl_equ	b15_dma_inv_range,		v7_dma_inv_range
+	globl_equ	b15_dma_clean_range,		v7_dma_clean_range
 	globl_equ	b15_dma_flush_range,		v7_dma_flush_range
 
 	define_cache_functions b15

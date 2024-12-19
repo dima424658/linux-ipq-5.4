@@ -293,8 +293,8 @@ static int adsp_probe(struct platform_device *pdev)
 	if (ret)
 		goto free_rproc;
 
-	ret = qcom_q6v5_init(&adsp->q6v5, pdev, rproc, desc->crash_reason_smem,
-			     qcom_pas_handover);
+	ret = qcom_q6v5_init(&adsp->q6v5, pdev, rproc, QCOM_SMEM_HOST_ANY,
+			     desc->crash_reason_smem, qcom_pas_handover);
 	if (ret)
 		goto free_rproc;
 

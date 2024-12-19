@@ -828,6 +828,10 @@ dtb-$(CONFIG_ARCH_PXA) += \
 dtb-$(CONFIG_ARCH_OXNAS) += \
 	ox810se-wd-mbwe.dtb \
 	ox820-cloudengines-pogoplug-series-3.dtb
+ifeq ($(CONFIG_IPQ_FLASH_16M_PROFILE),y)
+dtb-$(CONFIG_ARCH_QCOM) += \
+	ipq5332-mi04.1-c2.dtb
+else
 dtb-$(CONFIG_ARCH_QCOM) += \
 	qcom-apq8060-dragonboard.dtb \
 	qcom-apq8064-cm-qs600.dtb \
@@ -843,6 +847,119 @@ dtb-$(CONFIG_ARCH_QCOM) += \
 	qcom-ipq4019-ap.dk07.1-c1.dtb \
 	qcom-ipq4019-ap.dk07.1-c2.dtb \
 	qcom-ipq8064-ap148.dtb \
+	ipq5018-mp02.1.dtb \
+	ipq5018-mp03.1.dtb \
+	ipq5018-mp03.1-c2.dtb \
+	ipq5018-mp03.1-c3.dtb \
+	ipq5018-mp03.3.dtb \
+	ipq5018-db-mp03.1.dtb \
+	ipq5018-mp03.3-c2.dtb \
+	ipq5018-mp03.3-c3.dtb \
+	ipq5018-mp03.3-c4.dtb \
+	ipq5018-mp03.3-c5.dtb \
+	ipq5018-mp03.4-c1.dtb \
+	ipq5018-mp03.4-c2.dtb \
+	ipq5018-mp03.5-c1.dtb \
+	ipq5018-mp03.5-c2.dtb \
+	ipq5018-mp03.6-c1.dtb \
+	ipq5018-mp03.6-c2.dtb \
+	ipq5018-mp05.1.dtb \
+	ipq5018-tb-mp04.dtb \
+	ipq5332-emulation.dtb \
+	ipq5332-emulation-fbc.dtb \
+	ipq5332-emulation-ssoc.dtb \
+	ipq5332-mi01.2.dtb \
+	ipq5332-mi01.2-qca81xx.dtb \
+	ipq5332-mi01.2-qca81xx-i2c.dtb \
+	ipq5332-mi01.2-c2.dtb \
+	ipq5332-mi01.2-qcn9160-c1.dtb \
+	ipq5332-mi01.3.dtb \
+	ipq5332-mi01.3-c2.dtb \
+	ipq5332-mi01.3-c3.dtb \
+	ipq5332-mi01.4.dtb \
+	ipq5332-mi01.6.dtb \
+	ipq5332-mi01.7.dtb \
+	ipq5332-mi01.9.dtb \
+	ipq5332-mi01.12.dtb \
+	ipq5332-mi01.13.dtb \
+	ipq5332-mi01.14.dtb \
+	ipq5332-mi03.1.dtb \
+	ipq5332-mi04.1.dtb \
+	ipq5332-mi04.1-c2.dtb \
+	ipq5332-mi04.3.dtb \
+	ipq5332-tb-mi03.1.dtb \
+	ipq5332-tb-mi05.1.dtb \
+	ipq5332-db-mi01.1.dtb \
+	ipq5332-db-mi02.1.dtb \
+	ipq5332-db-mi03.1.dtb \
+	ipq6018-cp01-c1.dtb \
+	ipq6018-cp01-c3.dtb \
+	ipq6018-cp01-c4.dtb \
+	ipq6018-cp01-c5.dtb \
+	ipq6018-db-cp01.dtb \
+	ipq6018-cp02-c1.dtb \
+	ipq6018-cp03-c1.dtb \
+	ipq8074-hk01.dtb \
+	ipq8074-hk01.internal.dtb \
+	ipq8074-hk01.c2.dtb \
+	ipq8074-hk01.c3.dtb \
+	ipq8074-hk01.c4.dtb \
+	ipq8074-hk01.c5.dtb \
+	ipq8074-hk01.c6.dtb \
+	ipq8074-hk02.dtb \
+	ipq8074-db.hk02.dtb \
+	ipq8074-hk06.dtb \
+	ipq8074-hk07.dtb \
+	ipq8074-hk08.dtb \
+	ipq8074-hk09.dtb \
+	ipq8074-hk09.wkk.dtb \
+	ipq8074-hk10.dtb \
+	ipq8074-hk10.c2.dtb \
+	ipq8074-hk11.c1.dtb \
+	ipq8074-hk14.dtb \
+	ipq8074-oak02.dtb \
+	ipq8074-oak03.dtb \
+	ipq8074-ac01.dtb\
+	ipq8074-ac02.dtb\
+	ipq8074-ac03.dtb\
+	ipq8074-ac04.dtb\
+	ipq8074-hk12.dtb \
+	ipq9574-emulation.dtb \
+	ipq9574-emulation-fbc.dtb \
+	ipq9574-emulation-ssoc.dtb \
+	ipq9574-al01-c1.dtb \
+	ipq9574-al02-c1.dtb \
+	ipq9574-al03-c1.dtb \
+	ipq9574-al03-c2.dtb \
+	ipq9574-al02-c2.dtb \
+	ipq9574-al02-c3.dtb \
+	ipq9574-al02-c4.dtb \
+	ipq9574-al02-c5.dtb \
+	ipq9574-al02-c6.dtb \
+	ipq9574-al02-c7.dtb \
+	ipq9574-al02-c8.dtb \
+	ipq9574-al02-c9.dtb \
+	ipq9574-al02-c10.dtb \
+	ipq9574-al02-c11.dtb \
+	ipq9574-al02-c12.dtb \
+	ipq9574-al02-c13.dtb \
+	ipq9574-al02-c14.dtb \
+	ipq9574-al02-c15.dtb \
+	ipq9574-al02-c16.dtb \
+	ipq9574-al02-c17.dtb \
+	ipq9574-al02-c18.dtb \
+	ipq9574-al02-c19.dtb \
+	ipq9574-al02-c20.dtb \
+	ipq9574-al05.dtb \
+	ipq9574-al05-qca81xx.dtb \
+	ipq9574-al05-qca81xx-i2c.dtb \
+	ipq9574-al06.dtb \
+	ipq9574-db-al01-c1.dtb \
+	ipq9574-db-al01-c2.dtb \
+	ipq9574-db-al01-c3.dtb \
+	ipq9574-db-al02-c1.dtb \
+	ipq9574-db-al02-c2.dtb \
+	ipq9574-db-al02-c3.dtb \
 	qcom-msm8660-surf.dtb \
 	qcom-msm8960-cdp.dtb \
 	qcom-msm8974-fairphone-fp2.dtb \
@@ -852,6 +969,7 @@ dtb-$(CONFIG_ARCH_QCOM) += \
 	qcom-msm8974-sony-xperia-castor.dtb \
 	qcom-msm8974-sony-xperia-honami.dtb \
 	qcom-mdm9615-wp8548-mangoh-green.dtb
+endif
 dtb-$(CONFIG_ARCH_RDA) += \
 	rda8810pl-orangepi-2g-iot.dtb \
 	rda8810pl-orangepi-i96.dtb

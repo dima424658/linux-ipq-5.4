@@ -68,6 +68,7 @@ extern void debug_object_init      (void *addr, struct debug_obj_descr *descr);
 extern void
 debug_object_init_on_stack(void *addr, struct debug_obj_descr *descr);
 extern int debug_object_activate  (void *addr, struct debug_obj_descr *descr);
+extern int debug_object_get_state(void *addr);
 extern void debug_object_deactivate(void *addr, struct debug_obj_descr *descr);
 extern void debug_object_destroy   (void *addr, struct debug_obj_descr *descr);
 extern void debug_object_free      (void *addr, struct debug_obj_descr *descr);
@@ -85,6 +86,7 @@ debug_object_active_state(void *addr, struct debug_obj_descr *descr,
 extern void debug_objects_early_init(void);
 extern void debug_objects_mem_init(void);
 #else
+static inline int debug_object_get_state(void *addr) { return 0; }
 static inline void
 debug_object_init      (void *addr, struct debug_obj_descr *descr) { }
 static inline void
@@ -102,6 +104,22 @@ debug_object_assert_init(void *addr, struct debug_obj_descr *descr) { }
 
 static inline void debug_objects_early_init(void) { }
 static inline void debug_objects_mem_init(void) { }
+#endif
+
+#ifdef CONFIG_DEBUG_MEM_USAGE
+struct debug_obj_trace {
+	struct hlist_node node;
+	void *addr;
+	void *stack[9];
+	int size;
+};
+
+extern void debug_object_trace_init(void *addr, void **stack, size_t size);
+extern void debug_object_trace_free(void *addr);
+extern void debug_object_trace_update(void *addr, void **stack);
+extern void debug_mem_usage_init(void);
+#else
+static inline void debug_mem_usage_init(void) { }
 #endif
 
 #ifdef CONFIG_DEBUG_OBJECTS_FREE

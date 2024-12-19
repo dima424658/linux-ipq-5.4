@@ -80,6 +80,7 @@ struct Qdisc {
 #define TCQ_F_INVISIBLE		0x80 /* invisible by default in dump */
 #define TCQ_F_NOLOCK		0x100 /* qdisc does not require locking */
 #define TCQ_F_OFFLOADED		0x200 /* qdisc is offloaded to HW */
+#define TCQ_F_NSS		0x1000 /* NSS qdisc flag. */
 	u32			limit;
 	const struct Qdisc_ops	*ops;
 	struct qdisc_size_table	__rcu *stab;
@@ -603,12 +604,13 @@ extern struct Qdisc_ops noop_qdisc_ops;
 extern struct Qdisc_ops pfifo_fast_ops;
 extern struct Qdisc_ops mq_qdisc_ops;
 extern struct Qdisc_ops noqueue_qdisc_ops;
+extern struct Qdisc_ops fq_codel_qdisc_ops;
 extern const struct Qdisc_ops *default_qdisc_ops;
 static inline const struct Qdisc_ops *
 get_default_qdisc_ops(const struct net_device *dev, int ntx)
 {
 	return ntx < dev->real_num_tx_queues ?
-			default_qdisc_ops : &pfifo_fast_ops;
+			default_qdisc_ops : &fq_codel_qdisc_ops;
 }
 
 struct Qdisc_class_common {
@@ -725,6 +727,40 @@ static inline bool skb_skip_tc_classify(struct sk_buff *skb)
 #ifdef CONFIG_NET_CLS_ACT
 	if (skb->tc_skip_classify) {
 		skb->tc_skip_classify = 0;
+		return true;
+	}
+#endif
+	return false;
+}
+
+/*
+ * Set skb classify bit field.
+ */
+static inline void skb_set_tc_classify_offload(struct sk_buff *skb)
+{
+#ifdef CONFIG_NET_CLS_ACT
+	skb->tc_skip_classify_offload = 1;
+#endif
+}
+
+/*
+ * Clear skb classify bit field.
+ */
+static inline void skb_clear_tc_classify_offload(struct sk_buff *skb)
+{
+#ifdef CONFIG_NET_CLS_ACT
+	skb->tc_skip_classify_offload = 0;
+#endif
+}
+
+/*
+ * Skip skb processing if sent from ifb dev.
+ */
+static inline bool skb_skip_tc_classify_offload(struct sk_buff *skb)
+{
+#ifdef CONFIG_NET_CLS_ACT
+	if (skb->tc_skip_classify_offload) {
+		skb_clear_tc_classify_offload(skb);
 		return true;
 	}
 #endif

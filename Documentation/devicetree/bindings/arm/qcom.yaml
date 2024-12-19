@@ -34,6 +34,8 @@ description: |
   	msm8994
   	msm8996
   	mdm9615
+	ipq5018
+	ipq6018
   	ipq8074
   	sdm845
 
@@ -46,6 +48,7 @@ description: |
   	sbc
   	hk01
   	qrd
+	mp03
 
   The 'soc_version' and 'board_version' elements take the form of v<Major>.<Minor>
   where the minor number may be omitted when it's zero, i.e.  v1.0 is the same
@@ -136,12 +139,46 @@ properties:
 
       - items:
           - enum:
+              - qcom,ipq5018-ap-mp03.1
+              - qcom,ipq5018-ap-mp03.1-c2
+              - qcom,ipq5018-ap-mp03.1-c3
+              - qcom,ipq5018-ap-mp03.3
+              - qcom,ipq5018-ap-mp03.3-c2
+          - const: qcom,ipq5018
+
+      - items:
+          - enum:
               - qcom,ipq8064-ap148
           - const: qcom,ipq8064
 
       - items:
           - enum:
-              - qcom,ipq8074-hk01
+              - qcom,ipq8074-ap-hk01-c1
+              - qcom,ipq8074-ap-hk01-c2
+              - qcom,ipq8074-ap-hk01-c3
+              - qcom,ipq8074-ap-hk01-c4
+              - qcom,ipq8074-ap-hk01-c5
+              - qcom,ipq8074-ap-hk02
+              - qcom,ipq8074-ap-hk06
+              - qcom,ipq8074-ap-hk07
+              - qcom,ipq8074-ap-hk08
+              - qcom,ipq8074-ap-hk09
+              - qcom,ipq8074-ap-hk10-c1
+              - qcom,ipq8074-ap-hk10-c2
+              - qcom,ipq8074-ap-hk11
+              - qcom,ipq8074-ap-hk14
+              - qcom,ipq8074-ap-oak02
+              - qcom,ipq8074-ap-oak03
+              - qcom,ipq8074-ap-ac01
+              - qcom,ipq8074-ap-ac02
+              - qcom,ipq8074-ap-ac03
+              - qcom,ipq8074-ap-ac04
           - const: qcom,ipq8074
+
+      - items:
+          - enum:
+              - qcom,ipq6018-ap-cp01-c1
+              - qcom,ipq6018-ap-cp02-c1
+          - const: qcom,ipq6018
 
 ...

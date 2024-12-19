@@ -136,6 +136,13 @@ Maintainers List (try to look for most precise areas first)
 
 		-----------------------------------
 
+SKB RECYCLER SUPPORT
+M:	Casey Chen <kexinc@codeaurora.org>
+S:	Maintained
+F:	net/core/skbuff_recycle.*
+F:	net/core/skbuff_debug.*
+F:	net/core/skbuff_notifier.*
+
 3C59X NETWORK DRIVER
 M:	Steffen Klassert <klassert@kernel.org>
 L:	netdev@vger.kernel.org
@@ -10608,6 +10615,17 @@ METHODE UDPU SUPPORT
 M:	Vladimir Vid <vladimir.vid@sartura.hr>
 S:	Maintained
 F:	arch/arm64/boot/dts/marvell/armada-3720-uDPU.dts
+
+MHI BUS
+M:	Manivannan Sadhasivam <manivannan.sadhasivam@linaro.org>
+M:	Hemant Kumar <hemantk@codeaurora.org>
+L:	linux-arm-msm@vger.kernel.org
+S:	Maintained
+T:	git git://git.kernel.org/pub/scm/linux/kernel/git/mani/mhi.git
+F:	Documentation/ABI/stable/sysfs-bus-mhi
+F:	Documentation/mhi/
+F:	drivers/bus/mhi/
+F:	include/linux/mhi.h
 
 MICROBLAZE ARCHITECTURE
 M:	Michal Simek <monstr@monstr.eu>

@@ -115,8 +115,21 @@ static inline void flush_cache_range(struct vm_area_struct *vma,
 extern void __dma_map_area(const void *, size_t, int);
 extern void __dma_unmap_area(const void *, size_t, int);
 extern void __dma_flush_area(const void *, size_t);
+extern void __dma_inv_area(const void *start, size_t size);
+extern void __dma_clean_area(const void *start, size_t size);
+extern void __dma_flush_area_no_dsb(const void *, size_t);
+extern void __dma_inv_area_no_dsb(const void *start, size_t size);
+extern void __dma_clean_area_no_dsb(const void *start, size_t size);
+
+extern void dmac_flush_range(const void *, const void *);
+extern void dmac_inv_range(const void *, const void *);
+extern void dmac_clean_range(const void *, const void *);
+extern void dmac_flush_range_no_dsb(const void *, const void *);
+extern void dmac_inv_range_no_dsb(const void *start, const void *end);
+extern void dmac_clean_range_no_dsb(const void *start, const void *end);
 
 /*
+
  * Copy user data from/to a page which is mapped into a different
  * processes address space.  Really, we want to allow our "user
  * space" model to handle this.

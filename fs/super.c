@@ -1291,7 +1291,8 @@ int get_tree_bdev(struct fs_context *fc,
 
 	bdev = blkdev_get_by_path(fc->source, mode, fc->fs_type);
 	if (IS_ERR(bdev)) {
-		errorf(fc, "%s: Can't open blockdev", fc->source);
+		errorf(fc, "%s: Can't open blockdev, err: %ld", fc->source,
+								PTR_ERR(bdev));
 		return PTR_ERR(bdev);
 	}
 

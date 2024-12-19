@@ -831,7 +831,7 @@ static inline int bio_check_eod(struct bio *bio, sector_t maxsector)
 /*
  * Remap block n of partition p to block n+start(p) of the disk.
  */
-static inline int blk_partition_remap(struct bio *bio)
+int blk_partition_remap(struct bio *bio)
 {
 	struct hd_struct *p;
 	int ret = -EIO;
@@ -862,6 +862,7 @@ out:
 	rcu_read_unlock();
 	return ret;
 }
+EXPORT_SYMBOL(blk_partition_remap);
 
 static noinline_for_stack bool
 generic_make_request_checks(struct bio *bio)

@@ -118,6 +118,99 @@ config IPQ_GCC_8074
 	  i2c, USB, SD/eMMC, etc. Select this for the root clock
 	  of ipq8074.
 
+config IPQ_APSS_8074
+        tristate "IPQ8074 APSS Clock Controller"
+        select IPQ_GCC_8074
+        help
+          Support for APSS clock controller on ipq8074 devices.
+          Say Y if you want to use APSS clocks such as CPU.
+
+config IPQ_ADSS_8074
+	tristate "IPQ8074 ADSS Clock Controller"
+	select IPQ_GCC_8074
+	depends on COMMON_CLK_QCOM
+	help
+	  Support for ADSS clock controller on ipq807x devices.
+	  Say Y if you want to use ADSS clocks for Audio.
+
+config IPQ_GCC_6018
+	tristate "IPQ6018 Global Clock Controller"
+	help
+	  Support for global clock controller on ipq6018 devices.
+	  Say Y if you want to use peripheral devices such as UART, SPI,
+	  i2c, USB, SD/eMMC, etc. Select this for the root clock
+	  of ipq6018.
+
+config IPQ_APSS_PLL
+	tristate "IPQ APSS PLL"
+	help
+	  Support for APSS PLL on ipq devices. The APSS PLL is the main
+	  clock that feeds the CPUs on ipq based devices.
+	  Say Y if you want to support CPU frequency scaling on ipq based
+	  devices.
+
+config IPQ_APSS_6018
+	tristate "IPQ APSS Clock Controller"
+	select IPQ_APSS_PLL
+	depends on QCOM_APCS_IPC || COMPILE_TEST
+	help
+	  Support for APSS clock controller on IPQ platforms. The
+	  APSS clock controller manages the Mux and enable block that feeds the
+	  CPUs.
+	  Say Y if you want to support CPU frequency scaling on
+	  ipq based devices.
+
+config IPQ_GCC_9574
+	tristate "IPQ9574 Global Clock Controller"
+	help
+	  Support for global clock controller on ipq9574 devices.
+	  Say Y if you want to use peripheral devices such as UART, SPI,
+	  i2c, USB, SD/eMMC, etc. Select this for the root clock
+	  of ipq9574.
+
+config IPQ_NSSCC_9574
+	tristate "IPQ9574 NSS Clock Controller"
+	depends on IPQ_GCC_9574
+	help
+	  Support for NSS clock controller on ipq9574 devices.
+
+config IPQ_APSS_5018
+	tristate "IPQ5018 APSS Clock Controller"
+	select IPQ_GCC_5018
+	depends on COMMON_CLK_QCOM
+	help
+	  Support for APSS clock controller on ipq5018 devices.
+	  Say Y if you want to use APSS clocks such as CPU.
+
+config IPQ_GCC_5018
+	tristate "IPQ5018 Global Clock Controller"
+	help
+	 Support for global clock controller on ipq5018 devices.
+	 Say Y if you want to use peripheral devices such as UART, SPI,
+	 i2c, USB, SD/eMMC, etc. Select this for the root clock
+	 of ipq5018.
+
+config IPQ_GCC_IPQ5332
+	tristate "IPQ5332 Global Clock Controller"
+	help
+	 Support for global clock controller on IPQ5332 devices.
+	 Say Y if you want to use peripheral devices such as UART, SPI,
+	 i2c, USB, SD/eMMC, etc.
+
+config IPQ_APSS_IPQ5332
+	tristate "IPQ5332 APSS Clock Controller"
+	select IPQ_GCC_IPQ5332
+	depends on COMMON_CLK_QCOM
+	help
+	  Support for APSS clock controller on ipq5332 devices.
+	  Say Y if you want to use APSS clocks such as CPU.
+
+config IPQ_NSSCC_IPQ5332
+	tristate "IPQ5332 NSS Clock Controller"
+	depends on IPQ_GCC_IPQ5332
+	help
+	  Support for NSS clock controller on IPQ5332 devices.
+
 config MSM_GCC_8660
 	tristate "MSM8660 Global Clock Controller"
 	help

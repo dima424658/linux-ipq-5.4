@@ -8,6 +8,9 @@ Required properties:
                             IPQ4019 SoC and it uses BAM DMA
     * "qcom,ipq8074-nand" - for QPIC NAND controller v1.5.0 being used in
                             IPQ8074 SoC and it uses BAM DMA
+    * "qcom,ipq5018-nand" - for QPIC NAND controller v2.1.1 being used in
+                            IPQ5018 SoC and it uses BAM DMA and QSPI serial
+                            nand interface.
 
 - reg:			MMIO address range
 - clocks:		must contain core clock and always on clock

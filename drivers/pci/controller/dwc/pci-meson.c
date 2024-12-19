@@ -479,8 +479,6 @@ static int meson_pcie_host_init(struct pcie_port *pp)
 	if (ret)
 		return ret;
 
-	meson_pcie_enable_interrupts(mp);
-
 	return 0;
 }
 
@@ -497,14 +495,6 @@ static int meson_add_pcie_port(struct meson_pcie *mp,
 	struct pcie_port *pp = &pci->pp;
 	struct device *dev = &pdev->dev;
 	int ret;
-
-	if (IS_ENABLED(CONFIG_PCI_MSI)) {
-		pp->msi_irq = platform_get_irq(pdev, 0);
-		if (pp->msi_irq < 0) {
-			dev_err(dev, "failed to get MSI IRQ\n");
-			return pp->msi_irq;
-		}
-	}
 
 	pp->ops = &meson_pcie_host_ops;
 	pci->dbi_base = mp->mem_res.elbi_base;

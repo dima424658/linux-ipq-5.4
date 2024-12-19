@@ -22,7 +22,7 @@
 #define ARM_MMU_DISCARD(x)
 #else
 #define ARM_MMU_KEEP(x)
-#define ARM_MMU_DISCARD(x)	x
+#define ARM_MMU_DISCARD(x)	KEEP(x)
 #endif
 
 /*
@@ -41,7 +41,7 @@
 #define PROC_INFO							\
 		. = ALIGN(4);						\
 		__proc_info_begin = .;					\
-		*(.proc.info.init)					\
+		KEEP(*(.proc.info.init))				\
 		__proc_info_end = .;
 
 #define HYPERVISOR_TEXT							\
@@ -52,11 +52,11 @@
 #define IDMAP_TEXT							\
 		ALIGN_FUNCTION();					\
 		__idmap_text_start = .;					\
-		*(.idmap.text)						\
+		KEEP(*(.idmap.text))					\
 		__idmap_text_end = .;					\
 		. = ALIGN(PAGE_SIZE);					\
 		__hyp_idmap_text_start = .;				\
-		*(.hyp.idmap.text)					\
+		KEEP(*(.hyp.idmap.text))				\
 		__hyp_idmap_text_end = .;
 
 #define ARM_DISCARD							\
@@ -99,12 +99,12 @@
 	. = ALIGN(8);							\
 	.ARM.unwind_idx : {						\
 		__start_unwind_idx = .;					\
-		*(.ARM.exidx*)						\
+		KEEP(*(.ARM.exidx*))					\
 		__stop_unwind_idx = .;					\
 	}								\
 	.ARM.unwind_tab : {						\
 		__start_unwind_tab = .;					\
-		*(.ARM.extab*)						\
+		KEEP(*(.ARM.extab*))					\
 		__stop_unwind_tab = .;					\
 	}
 
@@ -116,7 +116,7 @@
 	__vectors_lma = .;						\
 	OVERLAY 0xffff0000 : NOCROSSREFS AT(__vectors_lma) {		\
 		.vectors {						\
-			*(.vectors)					\
+			KEEP(*(.vectors))					\
 		}							\
 		.vectors.bhb.loop8 {					\
 			*(.vectors.bhb.loop8)				\
@@ -134,7 +134,7 @@
 									\
 	__stubs_lma = .;						\
 	.stubs ADDR(.vectors) + 0x1000 : AT(__stubs_lma) {		\
-		*(.stubs)						\
+		KEEP(*(.stubs))						\
 	}								\
 	ARM_LMA(__stubs, .stubs);					\
 	. = __stubs_lma + SIZEOF(.stubs);				\

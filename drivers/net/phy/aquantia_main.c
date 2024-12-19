@@ -12,6 +12,7 @@
 #include <linux/delay.h>
 #include <linux/bitfield.h>
 #include <linux/phy.h>
+#include <linux/debugfs.h>
 
 #include "aquantia.h"
 
@@ -19,9 +20,17 @@
 #define PHY_ID_AQ2104	0x03a1b460
 #define PHY_ID_AQR105	0x03a1b4a2
 #define PHY_ID_AQR106	0x03a1b4d0
-#define PHY_ID_AQR107	0x03a1b4e0
+#define PHY_ID_AQR107	0x03a1b4e2
+#define PHY_ID_AQR108	0x03a1b4f2
+#define PHY_ID_AQR109	0x03a1b502
+#define PHY_ID_AQR111	0x03a1b610
+#define PHY_ID_AQR111B0	0x03a1b612
+#define PHY_ID_AQR112	0x03a1b660
+#define PHY_ID_AQR112C	0x03a1b792
+#define PHY_ID_AQR113C	0x31c31C10
 #define PHY_ID_AQCS109	0x03a1b5c2
 #define PHY_ID_AQR405	0x03a1b4b0
+#define PHY_ID_MVLX3410	0x31c31dd3
 
 #define MDIO_PHYXS_VEND_IF_STATUS		0xe812
 #define MDIO_PHYXS_VEND_IF_STATUS_TYPE_MASK	GENMASK(7, 3)
@@ -30,6 +39,9 @@
 #define MDIO_PHYXS_VEND_IF_STATUS_TYPE_USXGMII	3
 #define MDIO_PHYXS_VEND_IF_STATUS_TYPE_SGMII	6
 #define MDIO_PHYXS_VEND_IF_STATUS_TYPE_OCSGMII	10
+
+#define MDIO_PHYXS_VEND_USX_AUTONEG_STATUS	0xc441
+#define MDIO_PHYXS_VEND_USX_AUTONEG_STATUS_ENABLE	BIT(3)
 
 #define MDIO_AN_VEND_PROV			0xc400
 #define MDIO_AN_VEND_PROV_1000BASET_FULL	BIT(15)
@@ -63,6 +75,8 @@
 #define MDIO_AN_RX_LP_STAT1_1000BASET_HALF	BIT(14)
 #define MDIO_AN_RX_LP_STAT1_SHORT_REACH		BIT(13)
 #define MDIO_AN_RX_LP_STAT1_AQRATE_DOWNSHIFT	BIT(12)
+#define MDIO_AN_RX_LP_STAT1_LP_5000		BIT(11)
+#define MDIO_AN_RX_LP_STAT1_LP_2500		BIT(10)
 #define MDIO_AN_RX_LP_STAT1_AQ_PHY		BIT(2)
 
 #define MDIO_AN_RX_LP_STAT4			0xe823
@@ -122,6 +136,244 @@
 #define VEND1_GLOBAL_INT_VEND_MASK_GLOBAL1	BIT(2)
 #define VEND1_GLOBAL_INT_VEND_MASK_GLOBAL2	BIT(1)
 #define VEND1_GLOBAL_INT_VEND_MASK_GLOBAL3	BIT(0)
+
+#define AQ_PHY_MAX_VALID_MMD_REG		0xff01
+#define AQ_PHY_MAX_INVALID_MMD_REG		0xffff
+#define AQ_PHY_MIN_VALID_REG			0x10000
+#define AQ_PHY_MAX_VALID_REG			0x1f0000
+
+/* Driver private data structure */
+struct aq_priv {
+	struct phy_device *phydev;	/* Pointer to PHY device */
+	struct dentry *top_dentry;	/* Top dentry for AQ107 PHY Driver */
+	struct dentry *write_dentry;	/* write-reg file dentry */
+	struct dentry *read_dentry;	/* read-reg file dentry */
+	u32 phy_addr;		/* AQ107 PHY Address */
+	u32 reg_addr;		/* register address */
+	u16 reg_val;		/* register value */
+
+};
+
+/* Check for a valid range of PHY register address */
+static bool aquantia_phy_check_valid_reg(unsigned int reg_addr)
+{
+	bool ret = false;
+	u8 mmd;
+
+	if (reg_addr < AQ_PHY_MIN_VALID_REG)
+		return false;
+
+	if ((reg_addr & AQ_PHY_MAX_INVALID_MMD_REG) > AQ_PHY_MAX_VALID_MMD_REG)
+		return false;
+
+	mmd = (reg_addr & AQ_PHY_MAX_VALID_REG) >> 16;
+
+	switch (mmd) {
+	case MDIO_MMD_PMAPMD:
+	case MDIO_MMD_PCS:
+	case MDIO_MMD_PHYXS:
+	case MDIO_MMD_AN:
+	case MDIO_MMD_C22EXT:
+	case MDIO_MMD_VEND1:
+		ret = true;
+		break;
+	default:
+		ret = false;
+	}
+
+	return ret;
+}
+
+static ssize_t aquantia_phy_read_reg_get(struct file *fp,
+					 char __user *ubuf, size_t sz,
+					 loff_t *ppos)
+{
+	struct aq_priv *priv = (struct aq_priv *)fp->private_data;
+	char lbuf[40];
+	int bytes_read;
+
+	if (!priv)
+		return -EFAULT;
+
+	snprintf(lbuf, sizeof(lbuf), "phy%x(0x%x): 0x%x\n",
+		 priv->phy_addr, priv->reg_addr, priv->reg_val);
+
+	bytes_read = simple_read_from_buffer(ubuf, sz, ppos,
+					     lbuf, strlen(lbuf));
+
+	return bytes_read;
+}
+
+static ssize_t aquantia_phy_read_reg_set(struct file *fp,
+					 const char __user *ubuf,
+					 size_t sz, loff_t *ppos)
+{
+	struct aq_priv *priv = (struct aq_priv *)fp->private_data;
+	char lbuf[32];
+	size_t lbuf_size;
+	char *options = lbuf;
+	char *this_opt;
+	unsigned int reg_addr, phy_addr;
+	bool is_reabable = false;
+
+	if (!priv)
+		return -EFAULT;
+
+	lbuf_size = min(sz, (sizeof(lbuf) - 1));
+
+	if (copy_from_user(lbuf, ubuf, lbuf_size))
+		return -EFAULT;
+
+	lbuf[lbuf_size] = 0;
+
+	this_opt = strsep(&options, " ");
+	if (!this_opt)
+		goto fail;
+
+	kstrtouint(this_opt, 0, &phy_addr);
+	if ((options - lbuf) >= (lbuf_size - 1))
+		goto fail;
+
+	this_opt = strsep(&options, " ");
+	if (!this_opt)
+		goto fail;
+
+	kstrtouint(this_opt, 0, &reg_addr);
+
+	is_reabable = aquantia_phy_check_valid_reg(reg_addr);
+	if (is_reabable) {
+		priv->phy_addr = (uint32_t)phy_addr;
+		priv->reg_addr = (uint32_t)reg_addr;
+		reg_addr = MII_ADDR_C45 | reg_addr;
+		priv->reg_val = phy_read(priv->phydev, reg_addr);
+	} else {
+		goto fail;
+	}
+
+	return lbuf_size;
+
+fail:
+	return -EINVAL;
+}
+
+static ssize_t aquantia_phy_write_reg_set(struct file *fp,
+					  const char __user *ubuf,
+					  size_t sz,
+					  loff_t *ppos)
+{
+	struct aq_priv *priv = (struct aq_priv *)fp->private_data;
+	char lbuf[32];
+	size_t lbuf_size;
+	char *options = lbuf;
+	char *this_opt;
+	unsigned int phy_addr = 0;
+	unsigned int reg_addr = 0;
+	unsigned int reg_value = 0;
+	bool is_writeable = false;
+	u32 check_16bit_boundary = 0xffff0000;
+
+	if (!priv)
+		return -EFAULT;
+
+	lbuf_size = min(sz, (sizeof(lbuf) - 1));
+
+	if (copy_from_user(lbuf, ubuf, lbuf_size))
+		return -EFAULT;
+
+	lbuf[lbuf_size] = 0;
+
+	this_opt = strsep(&options, " ");
+	if (!this_opt)
+		goto fail;
+
+	kstrtouint(this_opt, 0, &phy_addr);
+	if ((options - lbuf) >= (lbuf_size - 1))
+		goto fail;
+
+	this_opt = strsep(&options, " ");
+	if (!this_opt)
+		goto fail;
+
+	kstrtouint(this_opt, 0, &reg_addr);
+	if ((options - lbuf) >= (lbuf_size - 1))
+		goto fail;
+
+	this_opt = strsep(&options, " ");
+	if (!this_opt)
+		goto fail;
+
+	kstrtouint(this_opt, 0, &reg_value);
+
+	if (phy_addr > 7)
+		goto fail;
+
+	 /* Check 16BIT register value boundary */
+	if (check_16bit_boundary & reg_value)
+		goto fail;
+
+	 /* Check for a valid Range of register and write into Phy dev */
+	is_writeable = aquantia_phy_check_valid_reg(reg_addr);
+	if (is_writeable) {
+		reg_addr = MII_ADDR_C45 | reg_addr;
+		phy_write(priv->phydev, reg_addr, reg_value);
+
+	} else {
+		goto fail;
+	}
+
+	return lbuf_size;
+
+fail:
+	return -EINVAL;
+}
+
+static const struct file_operations aquantia_phy_read_reg_ops = {
+	.open = simple_open,
+	.read = aquantia_phy_read_reg_get,
+	.write = aquantia_phy_read_reg_set,
+	.llseek = no_llseek,
+};
+
+static const struct file_operations aquantia_phy_write_reg_ops = {
+	.open = simple_open,
+	.write = aquantia_phy_write_reg_set,
+	.llseek = no_llseek,
+};
+
+/* Create debug-fs aq-phy dir and files */
+static int aquantia_phy_init_debugfs_entries(struct aq_priv *priv)
+{
+	char name[16];
+
+	snprintf(name, 16, "aquantia-phy-%d", priv->phydev->mdio.addr);
+	priv->top_dentry = debugfs_create_dir(name, NULL);
+	if (!priv->top_dentry)
+		return -1;
+
+	priv->write_dentry = debugfs_create_file("phy-write-reg", 0600,
+						 priv->top_dentry,
+						 priv,
+						 &aquantia_phy_write_reg_ops);
+	if (!priv->write_dentry) {
+		debugfs_remove_recursive(priv->top_dentry);
+		return -1;
+	}
+
+	priv->read_dentry = debugfs_create_file("phy-read-reg", 0600,
+						priv->top_dentry,
+						priv,
+						&aquantia_phy_read_reg_ops);
+	if (!priv->read_dentry) {
+		debugfs_remove_recursive(priv->top_dentry);
+		return -1;
+	}
+
+	priv->phy_addr = 0;
+	priv->reg_addr = 0;
+	priv->reg_val = 0;
+
+	return 0;
+}
 
 struct aqr107_hw_stat {
 	const char *name;
@@ -205,6 +457,14 @@ static void aqr107_get_stats(struct phy_device *phydev,
 	}
 }
 
+static int aqr107_autoneg_ctrl_init(struct phy_device *phydev)
+{
+	return phy_modify_mmd(phydev, MDIO_MMD_PHYXS,
+		MDIO_PHYXS_VEND_USX_AUTONEG_STATUS,
+		MDIO_PHYXS_VEND_USX_AUTONEG_STATUS_ENABLE,
+		MDIO_PHYXS_VEND_USX_AUTONEG_STATUS_ENABLE);
+}
+
 static int aqr_config_aneg(struct phy_device *phydev)
 {
 	bool changed = false;
@@ -285,7 +545,7 @@ static int aqr_ack_interrupt(struct phy_device *phydev)
 
 static int aqr_read_status(struct phy_device *phydev)
 {
-	int val;
+	int val = 0, ret;
 
 	if (phydev->autoneg == AUTONEG_ENABLE) {
 		val = phy_read_mmd(phydev, MDIO_MMD_AN, MDIO_AN_RX_LP_STAT1);
@@ -300,7 +560,20 @@ static int aqr_read_status(struct phy_device *phydev)
 				 val & MDIO_AN_RX_LP_STAT1_1000BASET_HALF);
 	}
 
-	return genphy_c45_read_status(phydev);
+	ret = genphy_c45_read_status(phydev);
+
+	if (val) {
+		linkmode_mod_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
+				 phydev->lp_advertising,
+				 val & MDIO_AN_RX_LP_STAT1_LP_2500);
+		linkmode_mod_bit(ETHTOOL_LINK_MODE_5000baseT_Full_BIT,
+				 phydev->lp_advertising,
+				 val & MDIO_AN_RX_LP_STAT1_LP_5000);
+
+		phy_resolve_aneg_linkmode(phydev);
+	}
+
+	return ret;
 }
 
 static int aqr107_read_downshift_event(struct phy_device *phydev)
@@ -516,6 +789,8 @@ static int aqr107_config_init(struct phy_device *phydev)
 	if (!ret)
 		aqr107_chip_info(phydev);
 
+	aqr107_autoneg_ctrl_init(phydev);
+
 	/* ensure that a latched downshift event is cleared */
 	aqr107_read_downshift_event(phydev);
 
@@ -596,18 +871,42 @@ static void aqr107_link_change_notify(struct phy_device *phydev)
 
 static int aqr107_suspend(struct phy_device *phydev)
 {
-	return phy_set_bits_mmd(phydev, MDIO_MMD_VEND1, MDIO_CTRL1,
+	int err;
+
+	err = phy_set_bits_mmd(phydev, MDIO_MMD_VEND1, MDIO_CTRL1,
 				MDIO_CTRL1_LPOWER);
+	mdelay(50);
+
+	return err;
 }
 
 static int aqr107_resume(struct phy_device *phydev)
 {
-	return phy_clear_bits_mmd(phydev, MDIO_MMD_VEND1, MDIO_CTRL1,
+	int err;
+
+	err = phy_clear_bits_mmd(phydev, MDIO_MMD_VEND1, MDIO_CTRL1,
 				  MDIO_CTRL1_LPOWER);
+	mdelay(50);
+
+	return err;
 }
 
 static int aqr107_probe(struct phy_device *phydev)
 {
+	struct aq_priv *priv;
+	int ret;
+
+	/* Initialize the debug-fs entries */
+	priv = vzalloc(sizeof(*priv));
+	if (!priv)
+		return -1;
+	priv->phydev = phydev;
+	ret = aquantia_phy_init_debugfs_entries(priv);
+	if (ret < 0) {
+		vfree(priv);
+		return ret;
+	}
+
 	phydev->priv = devm_kzalloc(&phydev->mdio.dev,
 				    sizeof(struct aqr107_priv), GFP_KERNEL);
 	if (!phydev->priv)
@@ -670,6 +969,114 @@ static struct phy_driver aqr_driver[] = {
 	.link_change_notify = aqr107_link_change_notify,
 },
 {
+	PHY_ID_MATCH_MODEL(PHY_ID_AQR108),
+	.name		= "Aquantia AQR108",
+	.probe		= aqr107_probe,
+	.config_init	= aqr107_config_init,
+	.config_aneg    = aqr_config_aneg,
+	.config_intr	= aqr_config_intr,
+	.ack_interrupt	= aqr_ack_interrupt,
+	.read_status	= aqr107_read_status,
+	.get_tunable    = aqr107_get_tunable,
+	.set_tunable    = aqr107_set_tunable,
+	.suspend	= aqr107_suspend,
+	.resume		= aqr107_resume,
+	.get_sset_count	= aqr107_get_sset_count,
+	.get_strings	= aqr107_get_strings,
+	.get_stats	= aqr107_get_stats,
+	.link_change_notify = aqr107_link_change_notify,
+},
+{
+	PHY_ID_MATCH_MODEL(PHY_ID_AQR109),
+	.name		= "Aquantia AQR109",
+	.probe		= aqr107_probe,
+	.config_init	= aqr107_config_init,
+	.config_aneg    = aqr_config_aneg,
+	.config_intr	= aqr_config_intr,
+	.ack_interrupt	= aqr_ack_interrupt,
+	.read_status	= aqr107_read_status,
+	.get_tunable    = aqr107_get_tunable,
+	.set_tunable    = aqr107_set_tunable,
+	.suspend	= aqr107_suspend,
+	.resume		= aqr107_resume,
+	.get_sset_count	= aqr107_get_sset_count,
+	.get_strings	= aqr107_get_strings,
+	.get_stats	= aqr107_get_stats,
+	.link_change_notify = aqr107_link_change_notify,
+},
+{
+	PHY_ID_MATCH_MODEL(PHY_ID_AQR111),
+	.name		= "Aquantia AQR111",
+	.probe		= aqr107_probe,
+	.config_init	= aqr107_config_init,
+	.config_aneg    = aqr_config_aneg,
+	.config_intr	= aqr_config_intr,
+	.ack_interrupt	= aqr_ack_interrupt,
+	.read_status	= aqr107_read_status,
+	.get_tunable    = aqr107_get_tunable,
+	.set_tunable    = aqr107_set_tunable,
+	.suspend	= aqr107_suspend,
+	.resume		= aqr107_resume,
+	.get_sset_count	= aqr107_get_sset_count,
+	.get_strings	= aqr107_get_strings,
+	.get_stats	= aqr107_get_stats,
+	.link_change_notify = aqr107_link_change_notify,
+},
+{
+	PHY_ID_MATCH_MODEL(PHY_ID_AQR112),
+	.name		= "Aquantia AQR112",
+	.probe		= aqr107_probe,
+	.config_init	= aqr107_config_init,
+	.config_aneg    = aqr_config_aneg,
+	.config_intr	= aqr_config_intr,
+	.ack_interrupt	= aqr_ack_interrupt,
+	.read_status	= aqr107_read_status,
+	.get_tunable    = aqr107_get_tunable,
+	.set_tunable    = aqr107_set_tunable,
+	.suspend	= aqr107_suspend,
+	.resume		= aqr107_resume,
+	.get_sset_count	= aqr107_get_sset_count,
+	.get_strings	= aqr107_get_strings,
+	.get_stats	= aqr107_get_stats,
+	.link_change_notify = aqr107_link_change_notify,
+},
+{
+	PHY_ID_MATCH_MODEL(PHY_ID_AQR112C),
+	.name		= "Aquantia AQR112C",
+	.probe		= aqr107_probe,
+	.config_init	= aqr107_config_init,
+	.config_aneg    = aqr_config_aneg,
+	.config_intr	= aqr_config_intr,
+	.ack_interrupt	= aqr_ack_interrupt,
+	.read_status	= aqr107_read_status,
+	.get_tunable    = aqr107_get_tunable,
+	.set_tunable    = aqr107_set_tunable,
+	.suspend	= aqr107_suspend,
+	.resume		= aqr107_resume,
+	.get_sset_count	= aqr107_get_sset_count,
+	.get_strings	= aqr107_get_strings,
+	.get_stats	= aqr107_get_stats,
+	.link_change_notify = aqr107_link_change_notify,
+},
+{
+	PHY_ID_MATCH_MODEL(PHY_ID_AQR113C),
+	.name		= "Aquantia AQR113C",
+	.probe		= aqr107_probe,
+	.config_init	= aqr107_config_init,
+	.config_aneg    = aqr_config_aneg,
+	.config_intr	= aqr_config_intr,
+	.ack_interrupt	= aqr_ack_interrupt,
+	.read_status	= aqr107_read_status,
+	.get_tunable    = aqr107_get_tunable,
+	.set_tunable    = aqr107_set_tunable,
+	.suspend	= aqr107_suspend,
+	.resume		= aqr107_resume,
+	.get_sset_count	= aqr107_get_sset_count,
+	.get_strings	= aqr107_get_strings,
+	.get_stats	= aqr107_get_stats,
+	.link_change_notify = aqr107_link_change_notify,
+},
+{
 	PHY_ID_MATCH_MODEL(PHY_ID_AQCS109),
 	.name		= "Aquantia AQCS109",
 	.probe		= aqr107_probe,
@@ -695,6 +1102,24 @@ static struct phy_driver aqr_driver[] = {
 	.ack_interrupt	= aqr_ack_interrupt,
 	.read_status	= aqr_read_status,
 },
+{
+	PHY_ID_MATCH_MODEL(PHY_ID_MVLX3410),
+	.name		= "MVLX3410",
+	.probe		= aqr107_probe,
+	.config_init	= aqr107_config_init,
+	.config_aneg    = aqr_config_aneg,
+	.config_intr	= aqr_config_intr,
+	.ack_interrupt	= aqr_ack_interrupt,
+	.read_status	= aqr107_read_status,
+	.get_tunable    = aqr107_get_tunable,
+	.set_tunable    = aqr107_set_tunable,
+	.suspend	= aqr107_suspend,
+	.resume		= aqr107_resume,
+	.get_sset_count	= aqr107_get_sset_count,
+	.get_strings	= aqr107_get_strings,
+	.get_stats	= aqr107_get_stats,
+	.link_change_notify = aqr107_link_change_notify,
+},
 };
 
 module_phy_driver(aqr_driver);
@@ -705,8 +1130,16 @@ static struct mdio_device_id __maybe_unused aqr_tbl[] = {
 	{ PHY_ID_MATCH_MODEL(PHY_ID_AQR105) },
 	{ PHY_ID_MATCH_MODEL(PHY_ID_AQR106) },
 	{ PHY_ID_MATCH_MODEL(PHY_ID_AQR107) },
+	{ PHY_ID_MATCH_MODEL(PHY_ID_AQR108) },
+	{ PHY_ID_MATCH_MODEL(PHY_ID_AQR109) },
+	{ PHY_ID_MATCH_MODEL(PHY_ID_AQR111) },
+	{ PHY_ID_MATCH_MODEL(PHY_ID_AQR111B0) },
+	{ PHY_ID_MATCH_MODEL(PHY_ID_AQR112) },
+	{ PHY_ID_MATCH_MODEL(PHY_ID_AQR112C) },
+	{ PHY_ID_MATCH_MODEL(PHY_ID_AQR113C) },
 	{ PHY_ID_MATCH_MODEL(PHY_ID_AQCS109) },
 	{ PHY_ID_MATCH_MODEL(PHY_ID_AQR405) },
+	{ PHY_ID_MATCH_MODEL(PHY_ID_MVLX3410) },
 	{ }
 };
 

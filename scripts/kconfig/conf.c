@@ -38,6 +38,7 @@ static enum input_mode input_mode = oldaskconfig;
 
 static int indent = 1;
 static int tty_stdio;
+static int valid_stdin = 1;
 static int sync_kconfig;
 static int conf_cnt;
 static char line[PATH_MAX];
@@ -68,6 +69,16 @@ static void strip(char *str)
 	p = str + l - 1;
 	while ((isspace(*p)))
 		*p-- = 0;
+}
+
+static void check_stdin(void)
+{
+	if (!valid_stdin) {
+		printf("aborted!\n\n");
+		printf("Console input/output is redirected. ");
+		printf("Run 'make oldconfig' to update configuration.\n\n");
+		exit(1);
+	}
 }
 
 /* Helper function to facilitate fgets() by Jean Sacren. */
@@ -104,6 +115,7 @@ static int conf_askvalue(struct symbol *sym, const char *def)
 			printf("%s\n", def);
 			return 0;
 		}
+		check_stdin();
 		/* fall through */
 	case oldaskconfig:
 		fflush(stdout);
@@ -298,6 +310,7 @@ static int conf_choice(struct menu *menu)
 				printf("%d\n", cnt);
 				break;
 			}
+			check_stdin();
 			/* fall through */
 		case oldaskconfig:
 			fflush(stdout);
@@ -626,6 +639,7 @@ int main(int ac, char **av)
 			}
 			no_conf_write = 1;
 		}
+		valid_stdin = tty_stdio;
 	}
 
 	switch (input_mode) {

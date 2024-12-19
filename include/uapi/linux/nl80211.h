@@ -56,6 +56,7 @@
 #define NL80211_EDMG_BW_CONFIG_MAX	15
 #define NL80211_EDMG_CHANNELS_MIN	1
 #define NL80211_EDMG_CHANNELS_MAX	0x3c /* 0b00111100 */
+#define NL80211_MLD_MAX_NUM_LINKS	15 /* Max Num of MLD Links */
 
 /**
  * DOC: Station handling
@@ -249,6 +250,57 @@
  */
 
 /**
+ * DOC: FILS shared key crypto offload
+ *
+ * This feature is applicable to Drivers running in AP mode.
+ *
+ * FILS shared key crypto offload can be advertized by drivers by setting
+ * @NL80211_EXT_FEATURE_FILS_CRYPTO_OFFLOAD flag. The drivers that support
+ * FILS shared key crypto offload should be able to encrypt or decrypt
+ * association frames for FILS shared key authentication as per IEEE 802.11ai.
+ * With this capability, for FILS key derivation, drivers depend on userspace.
+ *
+ * After FILS key derivation, userspace shares the FILS AAD details with driver
+ * and driver stores the same to use in decryption of association request and
+ * in encryption of association response. The below parameters should be given
+ * to driver in %NL80211_CMD_SET_FILS_AAD.
+ *	%NL80211_ATTR_MAC - STA MAC address, used for storing FILS AAD per STA
+ *	%NL80211_ATTR_FILS_KEK - Used for encryption or decryption
+ *	%NL80211_ATTR_FILS_NONCES - Used for encryption or decryption
+ *			(STA Nonce 16 bytes followed by AP Nonce 16 bytes)
+ *
+ * Once the association is done, the driver cleans the FILS AAD data.
+ */
+
+/**
+ * DOC: VLAN offload support for setting group keys and binding STAs to VLANs
+ *
+ * By setting @NL80211_EXT_FEATURE_VLAN_OFFLOAD flag drivers can indicate they
+ * support offloading VLAN functionality in a manner where the driver exposes a
+ * single netdev that uses VLAN tagged frames and separate VLAN-specific netdevs
+ * can then be added using RTM_NEWLINK/IFLA_VLAN_ID similarly to the Ethernet
+ * case. Frames received from stations that are not assigned to any VLAN are
+ * delivered on the main netdev and frames to such stations can be sent through
+ * that main netdev.
+ *
+ * %NL80211_CMD_NEW_KEY (for group keys), %NL80211_CMD_NEW_STATION, and
+ * %NL80211_CMD_SET_STATION will optionally specify vlan_id using
+ * %NL80211_ATTR_VLAN_ID.
+ */
+
+
+/**
+ * DOC: SAE mechanism for PWE derivation
+ *
+ * By setting @NL80211_ATTR_SAE_PWE flag userspace can indicate the SAE
+ * mechanism used for PWE derivation, in WPA3-Personal networks which are
+ * using SAE authentication.
+ *
+ * In %NL80211_CMD_CONNECT and %NL80211_CMD_START_AP the sae_pwe value
+ * for SAE authentication should be specified using the %NL80211_ATTR_SAE_PWE.
+ */
+
+/**
  * enum nl80211_commands - supported nl80211 commands
  *
  * @NL80211_CMD_UNSPEC: unspecified command to catch errors
@@ -310,7 +362,8 @@
  *	%NL80211_ATTR_CIPHER_GROUP, %NL80211_ATTR_WPA_VERSIONS,
  *	%NL80211_ATTR_AKM_SUITES, %NL80211_ATTR_PRIVACY,
  *	%NL80211_ATTR_AUTH_TYPE, %NL80211_ATTR_INACTIVITY_TIMEOUT,
- *	%NL80211_ATTR_ACL_POLICY and %NL80211_ATTR_MAC_ADDRS.
+ *	%NL80211_ATTR_ACL_POLICY, %NL80211_ATTR_MAC_ADDRS and
+ *	%NL80211_ATTR_SAE_PWE.
  *	The channel to use can be set on the interface or be given using the
  *	%NL80211_ATTR_WIPHY_FREQ and the attributes determining channel width.
  * @NL80211_CMD_NEW_BEACON: old alias for %NL80211_CMD_START_AP
@@ -561,7 +614,7 @@
  *	%NL80211_ATTR_CONTROL_PORT_ETHERTYPE,
  *	%NL80211_ATTR_CONTROL_PORT_NO_ENCRYPT,
  *	%NL80211_ATTR_CONTROL_PORT_OVER_NL80211, %NL80211_ATTR_MAC_HINT, and
- *	%NL80211_ATTR_WIPHY_FREQ_HINT.
+ *	%NL80211_ATTR_WIPHY_FREQ_HINT, %NL80211_ATTR_SAE_PWE.
  *	If included, %NL80211_ATTR_MAC and %NL80211_ATTR_WIPHY_FREQ are
  *	restrictions on BSS selection, i.e., they effectively prevent roaming
  *	within the ESS. %NL80211_ATTR_MAC_HINT and %NL80211_ATTR_WIPHY_FREQ_HINT
@@ -574,6 +627,9 @@
  *	%NL80211_ATTR_PREV_BSSID can be used to request a reassociation within
  *	the ESS in case the device is already associated and an association with
  *	a different BSS is desired.
+ *	%NL80211_ATTR_SAE_PWE can be used by userspace to indicate the SAE
+ *	mechanism used for PWE derivation in WPA3-Personal networks which are
+ *	using SAE authentication.
  *	Background scan period can optionally be
  *	specified in %NL80211_ATTR_BG_SCAN_PERIOD,
  *	if not specified default background scan configuration
@@ -1101,6 +1157,18 @@
  *	peer MAC address and %NL80211_ATTR_FRAME is used to specify the frame
  *	content. The frame is ethernet data.
  *
+ * @NL80211_CMD_CONTROL_PORT_FRAME_TX_STATUS: Report TX status of a control
+ *	port frame transmitted with %NL80211_CMD_CONTROL_PORT_FRAME.
+ *	%NL80211_ATTR_COOKIE identifies the TX command and %NL80211_ATTR_FRAME
+ *	includes the contents of the frame. %NL80211_ATTR_ACK flag is included
+ *	if the recipient acknowledged the frame.
+ *
+ * @NL80211_CMD_SET_FILS_AAD: Set FILS AAD data to the driver using
+ *	&NL80211_ATTR_MAC - for STA MAC address
+ *	&NL80211_ATTR_FILS_KEK - for KEK
+ *	&NL80211_ATTR_FILS_NONCES - for FILS Nonces
+ *		(STA Nonce 16 bytes followed by AP Nonce 16 bytes)
+ *
  * @NL80211_CMD_MAX: highest used command number
  * @__NL80211_CMD_AFTER_LAST: internal use
  */
@@ -1324,6 +1392,12 @@ enum nl80211_commands {
 	NL80211_CMD_UPDATE_OWE_INFO,
 
 	NL80211_CMD_PROBE_MESH_LINK,
+
+	NL80211_CMD_CONTROL_PORT_FRAME_TX_STATUS = 139,
+
+	NL80211_CMD_SET_FILS_AAD = 146,
+
+	NL80211_CMD_ADD_LINK_STA = 150,
 
 	/* add new commands above here */
 
@@ -1580,7 +1654,8 @@ enum nl80211_commands {
  *	flag is included, then control port frames are sent over NL80211 instead
  *	using %CMD_CONTROL_PORT_FRAME.  If control port routing over NL80211 is
  *	to be used then userspace must also use the %NL80211_ATTR_SOCKET_OWNER
- *	flag.
+ *	flag. When used with %NL80211_ATTR_CONTROL_PORT_NO_PREAUTH, pre-auth
+ *	frames are not forwared over the control port.
  *
  * @NL80211_ATTR_TESTDATA: Testmode data blob, passed through to the driver.
  *	We recommend using nested, driver-specific attributes within this.
@@ -2372,6 +2447,77 @@ enum nl80211_commands {
  * @NL80211_ATTR_WIPHY_EDMG_BW_CONFIG: Channel BW Configuration subfield encodes
  *	the allowed channel bandwidth configurations. (u8 attribute)
  *	Defined by IEEE P802.11ay/D4.0 section 9.4.2.251, Table 13.
+ * @NL80211_ATTR_VLAN_ID: VLAN ID (1..4094) for the station and VLAN group key
+ *	(u16).
+ * @NL80211_ATTR_HE_BSS_COLOR: nested attribute for BSS Color Settings.
+ *
+ * @NL80211_ATTR_IFTYPE_AKM_SUITES: nested array attribute, with each entry
+ *      using attributes from &enum nl80211_iftype_akm_attributes. This
+ *      attribute is sent in a response to %NL80211_CMD_GET_WIPHY indicating
+ *      supported AKM suites capability per interface. AKMs advertised in
+ *      %NL80211_ATTR_AKM_SUITES are default capabilities if AKM suites not
+ *      advertised for a specific interface type.
+ *
+ * @NL80211_ATTR_TID_CONFIG: TID specific configuration in a
+ *      nested attribute with &enum nl80211_tid_config_attr sub-attributes;
+ *      on output (in wiphy attributes) it contains only the feature sub-
+ *      attributes.
+ *
+ * @NL80211_ATTR_CONTROL_PORT_NO_PREAUTH: disable preauth frame rx on control
+ *      port in order to forward/receive them as ordinary data frames.
+ *
+ * @NL80211_ATTR_PMK_LIFETIME: Maximum lifetime for PMKSA in seconds (u32,
+ *      dot11RSNAConfigPMKReauthThreshold; 0 is not a valid value).
+ *      An optional parameter configured through %NL80211_CMD_SET_PMKSA.
+ *      Drivers that trigger roaming need to know the lifetime of the
+ *      configured PMKSA for triggering the full vs. PMKSA caching based
+ *      authentication. This timeout helps authentication methods like SAE,
+ *      where PMK gets updated only by going through a full (new SAE)
+ *      authentication instead of getting updated during an association for EAP
+ *      authentication. No new full authentication within the PMK expiry shall
+ *      result in a disassociation at the end of the lifetime.
+ *
+ * @NL80211_ATTR_PMK_REAUTH_THRESHOLD: Reauthentication threshold time, in
+ *      terms of percentage of %NL80211_ATTR_PMK_LIFETIME
+ *      (u8, dot11RSNAConfigPMKReauthThreshold, 1..100). This is an optional
+ *      parameter configured through %NL80211_CMD_SET_PMKSA. Requests the
+ *      driver to trigger a full authentication roam (without PMKSA caching)
+ *      after the reauthentication threshold time, but before the PMK lifetime
+ *      has expired.
+ *
+ *      Authentication methods like SAE need to be able to generate a new PMKSA
+ *      entry without having to force a disconnection after the PMK timeout. If
+ *      no roaming occurs between the reauth threshold and PMK expiration,
+ *      disassociation is still forced.
+ * @NL80211_ATTR_RECEIVE_MULTICAST: multicast flag for the
+ *      %NL80211_CMD_REGISTER_FRAME command, see the description there.
+ * @NL80211_ATTR_WIPHY_FREQ_OFFSET: offset of the associated
+ *      %NL80211_ATTR_WIPHY_FREQ in positive KHz. Only valid when supplied with
+ *      an %NL80211_ATTR_WIPHY_FREQ_OFFSET.
+ * @NL80211_ATTR_CENTER_FREQ1_OFFSET: Center frequency offset in KHz for the
+ *      first channel segment specified in %NL80211_ATTR_CENTER_FREQ1.
+ * @NL80211_ATTR_SCAN_FREQ_KHZ: nested attribute with KHz frequencies
+ *
+ * @NL80211_ATTR_HE_6GHZ_CAPABILITY: HE 6 GHz Band Capability element (from
+ *      association request when used with NL80211_CMD_NEW_STATION).
+ *
+ * @NL80211_ATTR_SAE_PWE: Indicates the mechanism(s) allowed for SAE PWE
+ *	derivation in WPA3-Personal networks which are using SAE authentication.
+ *	This is a u8 attribute that encapsulates one of the values from
+ *	&enum nl80211_sae_pwe_mechanism.
+ *
+ * @NL80211_ATTR_EHT_CAPABILITY: EHT Capability information element (from
+ *	association request when used with NL80211_CMD_NEW_STATION). Can be set
+ *	only if %NL80211_STA_FLAG_WME is set.
+ *
+ * @NL80211_ATTR_MLO_LINK_ID: A (u8) link ID for use with MLO, to be used with
+ * 	various commands that need a link ID to operate.
+ *
+ * @NL80211_ATTR_MLD_MAC: MLD MAC address.
+ * @NL80211_ATTR_MLD_REFERENCE: MLD Reference.
+ * @NL80211_ATTR_MLD_LINK_IDS: nested attribute to hold MLD link-ids.
+ * @NL80211_ATTR_MLD_LINK_MACS: nested attribute to hold MLD mac addrs.
+ * @NL80211_ATTR_RECONFIG: whether the operation is reconfiguration or not
  *
  * @NUM_NL80211_ATTR: total number of nl80211_attrs available
  * @NL80211_ATTR_MAX: highest attribute number currently defined
@@ -2834,6 +2980,37 @@ enum nl80211_attrs {
 
 	NL80211_ATTR_WIPHY_EDMG_CHANNELS,
 	NL80211_ATTR_WIPHY_EDMG_BW_CONFIG,
+	NL80211_ATTR_VLAN_ID,
+	NL80211_ATTR_HE_BSS_COLOR,
+	NL80211_ATTR_IFTYPE_AKM_SUITES,
+
+	NL80211_ATTR_TID_CONFIG,
+	NL80211_ATTR_CONTROL_PORT_NO_PREAUTH,
+
+	NL80211_ATTR_PMK_LIFETIME,
+	NL80211_ATTR_PMK_REAUTH_THRESHOLD,
+
+	NL80211_ATTR_RECEIVE_MULTICAST,
+	NL80211_ATTR_WIPHY_FREQ_OFFSET,
+	NL80211_ATTR_CENTER_FREQ1_OFFSET,
+	NL80211_ATTR_SCAN_FREQ_KHZ,
+
+	NL80211_ATTR_HE_6GHZ_CAPABILITY,
+
+	NL80211_ATTR_SAE_PWE = 298,
+
+	NL80211_ATTR_EHT_CAPABILITY = 310,
+
+	NL80211_ATTR_MLO_LINKS = 312,
+	NL80211_ATTR_MLO_LINK_ID = 313,
+	NL80211_ATTR_MLD_ADDR,
+
+	NL80211_ATTR_EHT_PUNCTURE_BITMAP = 350,
+	NL80211_ATTR_MLD_MAC,
+	NL80211_ATTR_MLD_REFERENCE,
+	NL80211_ATTR_MLD_LINK_IDS,
+	NL80211_ATTR_MLD_LINK_MACS,
+	NL80211_ATTR_RECONFIG,
 
 	/* add attributes here, update the policy in nl80211.c */
 
@@ -2888,6 +3065,9 @@ enum nl80211_attrs {
 #define NL80211_HE_MAX_CAPABILITY_LEN           54
 #define NL80211_MAX_NR_CIPHER_SUITES		5
 #define NL80211_MAX_NR_AKM_SUITES		2
+
+#define NL80211_EHT_MIN_CAPABILITY_LEN           16
+#define NL80211_EHT_MAX_CAPABILITY_LEN           54
 
 #define NL80211_MIN_REMAIN_ON_CHANNEL_TIME	10
 
@@ -3411,6 +3591,16 @@ enum nl80211_mpath_info {
  *     capabilities IE
  * @NL80211_BAND_IFTYPE_ATTR_HE_CAP_PPE: HE PPE thresholds information as
  *     defined in HE capabilities IE
+ * @NL80211_BAND_IFTYPE_ATTR_HE_6GHZ_CAPA: HE 6GHz band capabilities (__le16),
+ *     given for all 6 GHz band channels
+ * @@NL80211_BAND_IFTYPE_ATTR_VENDOR_ELEMS: vendor element capabilities that are
+ *     advertised on this band/for this iftype (binary)
+ * @NL80211_BAND_IFTYPE_ATTR_EHT_CAP_MAC: EHT MAC capabilities as in EHT
+ *     capabilities IE
+ * @NL80211_BAND_IFTYPE_ATTR_EHT_CAP_PHY: EHT PHY capabilities as in EHT
+ *     capabilities IE
+ * @NL80211_BAND_IFTYPE_ATTR_EHT_CAP_MCS_SET: EHT supported NSS/MCS as in EHT
+ *     capabilities IE
  * @NL80211_BAND_IFTYPE_ATTR_MAX: highest band HE capability attribute currently
  *     defined
  * @__NL80211_BAND_IFTYPE_ATTR_AFTER_LAST: internal use
@@ -3423,6 +3613,11 @@ enum nl80211_band_iftype_attr {
 	NL80211_BAND_IFTYPE_ATTR_HE_CAP_PHY,
 	NL80211_BAND_IFTYPE_ATTR_HE_CAP_MCS_SET,
 	NL80211_BAND_IFTYPE_ATTR_HE_CAP_PPE,
+	NL80211_BAND_IFTYPE_ATTR_HE_6GHZ_CAPA,
+	NL80211_BAND_IFTYPE_ATTR_VENDOR_ELEMS,
+	NL80211_BAND_IFTYPE_ATTR_EHT_CAP_MAC,
+	NL80211_BAND_IFTYPE_ATTR_EHT_CAP_PHY,
+	NL80211_BAND_IFTYPE_ATTR_EHT_CAP_MCS_SET,
 
 	/* keep last */
 	__NL80211_BAND_IFTYPE_ATTR_AFTER_LAST,
@@ -3556,6 +3751,7 @@ enum nl80211_wmm_rule {
  *	(see &enum nl80211_wmm_rule)
  * @NL80211_FREQUENCY_ATTR_MAX: highest frequency attribute number
  *	currently defined
+ * @NL80211_FREQUENCY_ATTR_CHANNEL: HW value for frequency
  * @__NL80211_FREQUENCY_ATTR_AFTER_LAST: internal use
  *
  * See https://apps.fcc.gov/eas/comments/GetPublishedDocument.html?id=327&tn=528122
@@ -3583,6 +3779,7 @@ enum nl80211_frequency_attr {
 	NL80211_FREQUENCY_ATTR_NO_20MHZ,
 	NL80211_FREQUENCY_ATTR_NO_10MHZ,
 	NL80211_FREQUENCY_ATTR_WMM,
+	NL80211_FREQUENCY_ATTR_CHANNEL = 28,
 
 	/* keep last */
 	__NL80211_FREQUENCY_ATTR_AFTER_LAST,
@@ -4275,6 +4472,8 @@ enum nl80211_key_mode {
  *	attribute must be provided as well
  * @NL80211_CHAN_WIDTH_5: 5 MHz OFDM channel
  * @NL80211_CHAN_WIDTH_10: 10 MHz OFDM channel
+ * @NL80211_CHAN_WIDTH_320: 320 MHz channel, the %NL80211_ATTR_CENTER_FREQ1
+ *	attribute must be provided as well
  */
 enum nl80211_chan_width {
 	NL80211_CHAN_WIDTH_20_NOHT,
@@ -4285,6 +4484,7 @@ enum nl80211_chan_width {
 	NL80211_CHAN_WIDTH_160,
 	NL80211_CHAN_WIDTH_5,
 	NL80211_CHAN_WIDTH_10,
+	NL80211_CHAN_WIDTH_320 = 13,
 };
 
 /**
@@ -4518,6 +4718,7 @@ enum nl80211_key_attributes {
 	NL80211_KEY_TYPE,
 	NL80211_KEY_DEFAULT_TYPES,
 	NL80211_KEY_MODE,
+	NL80211_KEY_DEFAULT_BEACON,
 
 	/* keep last */
 	__NL80211_KEY_AFTER_LAST,
@@ -5484,6 +5685,36 @@ enum nl80211_feature_flags {
  * @NL80211_EXT_FEATURE_SAE_OFFLOAD: Device wants to do SAE authentication in
  *	station mode (SAE password is passed as part of the connect command).
  *
+ * @NL80211_EXT_FEATURE_VLAN_OFFLOAD: The driver supports a single netdev
+ *	with VLAN tagged frames and separate VLAN-specific netdevs added using
+ *	vconfig similarly to the Ethernet case.
+ *
+ * @NL80211_EXT_FEATURE_AQL: The driver supports the Airtime Queue Limit (AQL)
+ * 	feature, which prevents bufferbloat by using the expected transmission
+ * 	time to limit the amount of data buffered in the hardware.
+ *
+ * @NL80211_EXT_FEATURE_BEACON_PROTECTION: The driver supports Beacon protection
+ *	and can receive key configuration for BIGTK using key indexes 6 and 7.
+ *
+ * @NL80211_EXT_FEATURE_CONTROL_PORT_NO_PREAUTH: The driver can disable the
+ *	forwarding of preauth frames over the control port. They are then
+ *	handled as ordinary data frames.
+ *
+ * @NL80211_EXT_FEATURE_CONTROL_PORT_OVER_NL80211_TX_STATUS: The driver
+ *	can report tx status for control port over nl80211 tx operations.
+ *
+ * @NL80211_EXT_FEATURE_FILS_CRYPTO_OFFLOAD: Driver running in AP mode supports
+ *	FILS encryption/decryption for (Re)Association Request/Response frames.
+ *	Userspace has to share FILS AAD details to the driver by using
+ *	@NL80211_CMD_SET_FILS_AAD.
+ *
+ * @NL80211_EXT_FEATURE_MLO: Driver/Device support Multi-link Operation(MLO)
+ *  feature.
+ *
+ * @NL80211_EXT_FEATURE_AUTH_AND_DEAUTH_RANDOM_TA: Device supports randomized TA
+ *	for authentication and deauthentication frames sent to unassociated peer
+ *	using @NL80211_CMD_FRAME.
+ *
  * @NUM_NL80211_EXT_FEATURES: number of extended features.
  * @MAX_NL80211_EXT_FEATURES: highest extended feature index.
  */
@@ -5529,6 +5760,14 @@ enum nl80211_ext_feature_index {
 	NL80211_EXT_FEATURE_EXT_KEY_ID,
 	NL80211_EXT_FEATURE_STA_TX_PWR,
 	NL80211_EXT_FEATURE_SAE_OFFLOAD,
+	NL80211_EXT_FEATURE_VLAN_OFFLOAD,
+	NL80211_EXT_FEATURE_AQL,
+	NL80211_EXT_FEATURE_BEACON_PROTECTION,
+	NL80211_EXT_FEATURE_CONTROL_PORT_NO_PREAUTH,
+	NL80211_EXT_FEATURE_CONTROL_PORT_OVER_NL80211_TX_STATUS = 48,
+	NL80211_EXT_FEATURE_FILS_CRYPTO_OFFLOAD = 59,
+	NL80211_EXT_FEATURE_MLO = 72,
+	NL80211_EXT_FEATURE_AUTH_AND_DEAUTH_RANDOM_TA,
 
 	/* add new features before the definition below */
 	NUM_NL80211_EXT_FEATURES,
@@ -6548,5 +6787,25 @@ enum nl80211_obss_pd_attributes {
 	NL80211_HE_OBSS_PD_ATTR_MAX = __NL80211_HE_OBSS_PD_ATTR_LAST - 1,
 };
 
+/**
+ * enum nl80211_sae_pwe_mechanism - The mechanism(s) allowed for SAE PWE
+ *     derivation. Applicable only when WPA3-Personal SAE authentication is
+ *     used.
+ *
+ * @NL80211_SAE_PWE_UNSPECIFIED: not specified, used internally to indicate that
+ *     attribute is not present from userspace.
+ * @NL80211_SAE_PWE_HUNT_AND_PECK: hunting-and-pecking loop only
+ * @NL80211_SAE_PWE_HASH_TO_ELEMENT: hash-to-element only
+ * @NL80211_SAE_PWE_BOTH: both hunting-and-pecking loop and hash-to-element
+ *     can be used.
+ */
+enum nl80211_sae_pwe_mechanism {
+       NL80211_SAE_PWE_UNSPECIFIED,
+       NL80211_SAE_PWE_HUNT_AND_PECK,
+       NL80211_SAE_PWE_HASH_TO_ELEMENT,
+       NL80211_SAE_PWE_BOTH,
+};
+
+#define NL80211_MLO_INVALID_LINK_ID	-1
 
 #endif /* __LINUX_NL80211_H */

@@ -1559,6 +1559,7 @@ static int mmc_blk_cqe_issue_rw_rq(struct mmc_queue *mq, struct request *req)
 	struct mmc_queue_req *mqrq = req_to_mmc_queue_req(req);
 
 	mmc_blk_data_prep(mq, mqrq, 0, NULL, NULL);
+	mqrq->brq.mrq.req = req;
 
 	return mmc_blk_cqe_start_req(mq->card->host, &mqrq->brq.mrq);
 }
@@ -2159,6 +2160,7 @@ static int mmc_blk_mq_issue_rw_rq(struct mmc_queue *mq,
 	int err = 0;
 
 	mmc_blk_rw_rq_prep(mqrq, mq->card, 0, mq);
+	mqrq->brq.mrq.req = req;
 
 	mqrq->brq.mrq.done = mmc_blk_mq_req_done;
 

@@ -14,6 +14,7 @@ if ETHERNET
 
 config MDIO
 	tristate
+	default y
 
 config SUNGEM_PHY
 	tristate

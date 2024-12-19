@@ -179,6 +179,23 @@ dtc_cpp_flags  = -Wp,-MD,$(depfile).pre.tmp -nostdinc                    \
 		 $(addprefix -I,$(DTC_INCLUDE))                          \
 		 -undef -D__DTS__
 
+#Add DDR profiling for different DDR size in dtsi
+ifeq ($(CONFIG_IPQ_FLASH_16M_PROFILE),y)
+dtc_cpp_flags += -D __IPQ_MEM_PROFILE_256_MB__ -D __IPQ_MEM_PROFILE_16_MB__
+else ifeq ($(CONFIG_IPQ_MEM_PROFILE),256)
+dtc_cpp_flags += -D __IPQ_MEM_PROFILE_256_MB__
+else ifeq ($(CONFIG_IPQ_MEM_PROFILE),512)
+dtc_cpp_flags += -D __IPQ_MEM_PROFILE_512_MB__
+endif
+
+ifeq ($(CONFIG_CNSS2),y)
+dtc_cpp_flags += -D __CNSS2__
+endif
+
+ifeq ($(CONFIG_CPU_THERMAL),y)
+dtc_cpp_flags += -D __CPU_THERMAL__
+endif
+
 # Useful for describing the dependency of composite objects
 # Usage:
 #   $(call multi_depend, multi_used_targets, suffix_to_remove, suffix_to_add)
@@ -328,7 +345,7 @@ quiet_cmd_bzip2 = BZIP2   $@
 # ---------------------------------------------------------------------------
 
 quiet_cmd_lzma = LZMA    $@
-      cmd_lzma = { cat $(real-prereqs) | $(LZMA) -9; $(size_append); } > $@
+      cmd_lzma = { cat $(real-prereqs) | lzma e -d20 -lc1 -lp2 -pb2 -eos -si -so; $(size_append); } > $@
 
 quiet_cmd_lzo = LZO     $@
       cmd_lzo = { cat $(real-prereqs) | $(KLZOP) -9; $(size_append); } > $@

@@ -136,6 +136,19 @@ rdev_set_default_mgmt_key(struct cfg80211_registered_device *rdev,
 	return ret;
 }
 
+static inline int
+rdev_set_default_beacon_key(struct cfg80211_registered_device *rdev,
+			    struct net_device *netdev, u8 key_index)
+{
+	int ret;
+
+	trace_rdev_set_default_beacon_key(&rdev->wiphy, netdev, key_index);
+	ret = rdev->ops->set_default_beacon_key(&rdev->wiphy, netdev,
+						key_index);
+	trace_rdev_return_int(&rdev->wiphy, ret);
+	return ret;
+}
+
 static inline int rdev_start_ap(struct cfg80211_registered_device *rdev,
 				struct net_device *dev,
 				struct cfg80211_ap_settings *settings)
@@ -159,11 +172,12 @@ static inline int rdev_change_beacon(struct cfg80211_registered_device *rdev,
 }
 
 static inline int rdev_stop_ap(struct cfg80211_registered_device *rdev,
-			       struct net_device *dev)
+			       struct net_device *dev,
+			       struct cfg80211_ap_settings *settings)
 {
 	int ret;
 	trace_rdev_stop_ap(&rdev->wiphy, dev);
-	ret = rdev->ops->stop_ap(&rdev->wiphy, dev);
+	ret = rdev->ops->stop_ap(&rdev->wiphy, dev, settings);
 	trace_rdev_return_int(&rdev->wiphy, ret);
 	return ret;
 }
@@ -735,14 +749,17 @@ static inline int rdev_tx_control_port(struct cfg80211_registered_device *rdev,
 				       struct net_device *dev,
 				       const void *buf, size_t len,
 				       const u8 *dest, __be16 proto,
-				       const bool noencrypt)
+				       const bool noencrypt, u64 *cookie)
 {
 	int ret;
 	trace_rdev_tx_control_port(&rdev->wiphy, dev, buf, len,
 				   dest, proto, noencrypt);
 	ret = rdev->ops->tx_control_port(&rdev->wiphy, dev, buf, len,
-					 dest, proto, noencrypt);
-	trace_rdev_return_int(&rdev->wiphy, ret);
+					 dest, proto, noencrypt, cookie);
+	if (cookie)
+		trace_rdev_return_int_cookie(&rdev->wiphy, ret, *cookie);
+	else
+		trace_rdev_return_int(&rdev->wiphy, ret);
 	return ret;
 }
 
@@ -1309,6 +1326,35 @@ rdev_probe_mesh_link(struct cfg80211_registered_device *rdev,
 
 	trace_rdev_probe_mesh_link(&rdev->wiphy, dev, dest, buf, len);
 	ret = rdev->ops->probe_mesh_link(&rdev->wiphy, dev, buf, len);
+	trace_rdev_return_int(&rdev->wiphy, ret);
+	return ret;
+}
+
+static inline int
+rdev_set_fils_aad(struct cfg80211_registered_device *rdev,
+		  struct net_device *dev, struct cfg80211_fils_aad *fils_aad)
+{
+	int ret = -EOPNOTSUPP;
+
+	trace_rdev_set_fils_aad(&rdev->wiphy, dev, fils_aad);
+	if (rdev->ops->set_fils_aad)
+		ret = rdev->ops->set_fils_aad(&rdev->wiphy, dev, fils_aad);
+	trace_rdev_return_int(&rdev->wiphy, ret);
+
+	return ret;
+}
+
+static inline int
+rdev_add_link_station(struct cfg80211_registered_device *rdev,
+		      struct net_device *dev,
+		      struct link_station_parameters *params)
+{
+	int ret;
+
+	if (!rdev->ops->add_link_station)
+		return -EOPNOTSUPP;
+	trace_rdev_add_link_station(&rdev->wiphy, dev, params);
+	ret = rdev->ops->add_link_station(&rdev->wiphy, dev, params);
 	trace_rdev_return_int(&rdev->wiphy, ret);
 	return ret;
 }

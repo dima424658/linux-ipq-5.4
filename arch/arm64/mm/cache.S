@@ -146,7 +146,7 @@ ENTRY(__inval_dcache_area)
  *	- start   - virtual start address of region
  *	- size    - size in question
  */
-__dma_inv_area:
+ENTRY(__dma_inv_area)
 	add	x1, x1, x0
 	dcache_line_size x2, x3
 	sub	x3, x2, #1
@@ -169,6 +169,35 @@ ENDPIPROC(__inval_dcache_area)
 ENDPROC(__dma_inv_area)
 
 /*
+ *	__dma_inv_area_no_dsb(start, size)
+ *
+ *	This macro does not do "data synchronization barrier". Caller should
+ *	do "dsb" after transaction.
+ *
+ *	- start   - virtual start address of region
+ *	- size    - size in question
+ */
+ENTRY(__dma_inv_area_no_dsb)
+	add	x1, x1, x0
+	dcache_line_size x2, x3
+	sub	x3, x2, #1
+	tst	x1, x3				// end cache line aligned?
+	bic	x1, x1, x3
+	b.eq	1f
+	dc	civac, x1			// clean & invalidate D / U line
+1:	tst	x0, x3				// start cache line aligned?
+	bic	x0, x0, x3
+	b.eq	2f
+	dc	civac, x0			// clean & invalidate D / U line
+	b	3f
+2:	dc	ivac, x0			// invalidate D / U line
+3:	add	x0, x0, x2
+	cmp	x0, x1
+	b.lo	2b
+	ret
+ENDPROC(__dma_inv_area_no_dsb)
+
+/*
  *	__clean_dcache_area_poc(kaddr, size)
  *
  * 	Ensure that any D-cache lines for the interval [kaddr, kaddr+size)
@@ -185,11 +214,25 @@ ENTRY(__clean_dcache_area_poc)
  *	- start   - virtual start address of region
  *	- size    - size in question
  */
-__dma_clean_area:
+ENTRY(__dma_clean_area)
 	dcache_by_line_op cvac, sy, x0, x1, x2, x3
 	ret
 ENDPIPROC(__clean_dcache_area_poc)
 ENDPROC(__dma_clean_area)
+
+/*
+ *	__dma_clean_area_no_dsb(start, size)
+ *
+ *	This macro does not do "data synchronization barrier". Caller should
+ *	do "dsb" after transaction.
+ *
+ *	- start   - virtual start address of region
+ *	- size    - size in question
+ */
+ENTRY(__dma_clean_area_no_dsb)
+	dcache_by_line_op_no_dsb cvac, x0, x1, x2, x3
+	ret
+ENDPROC(__dma_clean_area_no_dsb)
 
 /*
  *	__clean_dcache_area_pop(kaddr, size)
@@ -220,6 +263,21 @@ ENTRY(__dma_flush_area)
 	dcache_by_line_op civac, sy, x0, x1, x2, x3
 	ret
 ENDPIPROC(__dma_flush_area)
+
+/*
+ *	__dma_flush_area_no_dsb(start, size)
+ *
+ *	clean & invalidate D / U line
+ *	This macro does not do "data synchronization barrier". Caller should
+ *	do "dsb" after transaction.
+ *
+ *	- start   - virtual start address of region
+ *	- size    - size in question
+ */
+ENTRY(__dma_flush_area_no_dsb)
+	dcache_by_line_op_no_dsb civac, x0, x1, x2, x3
+	ret
+ENDPIPROC(__dma_flush_area_no_dsb)
 
 /*
  *	__dma_map_area(start, size, dir)

@@ -3,6 +3,7 @@
 # Makefile for the linux kernel.
 #
 
+KBUILD_CFLAGS += -Werror
 ccflags-y := -fno-function-sections -fno-data-sections
 
 obj-y                          := main.o version.o mounts.o

@@ -36,7 +36,12 @@
 
 #include "internal.h"
 
+#if CONFIG_IPQ_MEM_PROFILE == 256 || CONFIG_IPQ_MEM_PROFILE == 512
+static bool notests=1;
+#else
 static bool notests;
+#endif
+
 module_param(notests, bool, 0644);
 MODULE_PARM_DESC(notests, "disable crypto self-tests");
 
@@ -290,15 +295,22 @@ static const struct testvec_config default_cipher_testvec_configs[] = {
 		.name = "in-place",
 		.inplace = true,
 		.src_divs = { { .proportion_of_total = 10000 } },
-	}, {
+	},
+
+	{
 		.name = "out-of-place",
+		.inplace = false,
 		.src_divs = { { .proportion_of_total = 10000 } },
-	}, {
+	},
+
+	{
 		.name = "unaligned buffer, offset=1",
+		.inplace = true,
 		.src_divs = { { .proportion_of_total = 10000, .offset = 1 } },
 		.iv_offset = 1,
 	}, {
 		.name = "buffer aligned only to alignmask",
+		.inplace = true,
 		.src_divs = {
 			{
 				.proportion_of_total = 10000,
@@ -308,7 +320,10 @@ static const struct testvec_config default_cipher_testvec_configs[] = {
 		},
 		.iv_offset = 1,
 		.iv_offset_relative_to_alignmask = true,
-	}, {
+	},
+#ifndef CONFIG_CRYPTO_DISABLE_AUTH_SPLIT_TESTS
+	/* HW requires authentication data not be to be split between scatters */
+	{
 		.name = "two even aligned splits",
 		.src_divs = {
 			{ .proportion_of_total = 5000 },
@@ -336,14 +351,19 @@ static const struct testvec_config default_cipher_testvec_configs[] = {
 			},
 		},
 	}
+#endif
 };
 
 static const struct testvec_config default_hash_testvec_configs[] = {
+#ifndef CONFIG_CRYPTO_DISABLE_AHASH_TYPE1_TESTS
+	/* Update in testmgr requires the result back whereas HW hides result from the user */
 	{
 		.name = "init+update+final aligned buffer",
 		.src_divs = { { .proportion_of_total = 10000 } },
 		.finalization_type = FINALIZATION_TYPE_FINAL,
-	}, {
+	},
+#endif
+	{
 		.name = "init+finup aligned buffer",
 		.src_divs = { { .proportion_of_total = 10000 } },
 		.finalization_type = FINALIZATION_TYPE_FINUP,
@@ -351,11 +371,16 @@ static const struct testvec_config default_hash_testvec_configs[] = {
 		.name = "digest aligned buffer",
 		.src_divs = { { .proportion_of_total = 10000 } },
 		.finalization_type = FINALIZATION_TYPE_DIGEST,
-	}, {
+	},
+#ifndef CONFIG_CRYPTO_DISABLE_AHASH_TYPE1_TESTS
+	/* Update in testmgr requires the result back whereas HW hides result from the user */
+	{
 		.name = "init+update+final misaligned buffer",
 		.src_divs = { { .proportion_of_total = 10000, .offset = 1 } },
 		.finalization_type = FINALIZATION_TYPE_FINAL,
-	}, {
+	},
+#endif
+	{
 		.name = "digest buffer aligned only to alignmask",
 		.src_divs = {
 			{
@@ -365,7 +390,10 @@ static const struct testvec_config default_hash_testvec_configs[] = {
 			},
 		},
 		.finalization_type = FINALIZATION_TYPE_DIGEST,
-	}, {
+	},
+#ifndef CONFIG_CRYPTO_DISABLE_AHASH_TYPE2_TESTS
+	/* Update in testmgr requires the result back whereas HW hides result from the user */
+	{
 		.name = "init+update+update+final two even splits",
 		.src_divs = {
 			{ .proportion_of_total = 5000 },
@@ -375,7 +403,9 @@ static const struct testvec_config default_hash_testvec_configs[] = {
 			},
 		},
 		.finalization_type = FINALIZATION_TYPE_FINAL,
-	}, {
+	},
+#endif
+	{
 		.name = "digest uneven misaligned splits, may sleep",
 		.req_flags = CRYPTO_TFM_REQ_MAY_SLEEP,
 		.src_divs = {
@@ -396,7 +426,10 @@ static const struct testvec_config default_hash_testvec_configs[] = {
 			},
 		},
 		.finalization_type = FINALIZATION_TYPE_DIGEST,
-	}, {
+	},
+#ifndef CONFIG_CRYPTO_DISABLE_AHASH_TYPE3_TESTS
+	/* import/export are not supported by HW */
+	{
 		.name = "import/export",
 		.src_divs = {
 			{
@@ -409,6 +442,7 @@ static const struct testvec_config default_hash_testvec_configs[] = {
 		},
 		.finalization_type = FINALIZATION_TYPE_FINAL,
 	}
+#endif
 };
 
 static unsigned int count_test_sg_divisions(const struct test_sg_division *divs)
@@ -3874,6 +3908,11 @@ static int alg_test_null(const struct alg_test_desc *desc,
 	return 0;
 }
 
+static const char *test_disabled_algs[] = {
+	"essiv(cbc-aes-qce,sha256-generic)",
+	NULL,
+};
+
 #define __VECS(tv)	{ .vecs = tv, .count = ARRAY_SIZE(tv) }
 
 /* Please keep this list sorted by algorithm name. */
@@ -3985,6 +4024,13 @@ static const struct alg_test_desc alg_test_descs[] = {
 		.alg = "authenc(hmac(sha256),rfc3686(ctr(aes)))",
 		.test = alg_test_null,
 		.fips_allowed = 1,
+	}, {
+		.alg = "authenc(hmac(sha384),cbc(aes))",
+		.test = alg_test_aead,
+		.fips_allowed = 1,
+		.suite = {
+			.aead = __VECS(hmac_sha384_aes_cbc_tv_temp)
+		}
 	}, {
 		.alg = "authenc(hmac(sha384),cbc(des))",
 		.test = alg_test_aead,
@@ -5203,6 +5249,19 @@ static int alg_find_test(const char *alg)
 	return -1;
 }
 
+static bool alg_test_is_disabled(const char *alg)
+{
+	int curr = 0;
+
+	while (test_disabled_algs[curr]) {
+		if (!strcmp(test_disabled_algs[curr], alg))
+			return true;
+		curr++;
+	}
+
+	return false;
+}
+
 int alg_test(const char *driver, const char *alg, u32 type, u32 mask)
 {
 	int i;
@@ -5234,6 +5293,9 @@ int alg_test(const char *driver, const char *alg, u32 type, u32 mask)
 		goto test_done;
 	}
 
+	if (alg_test_is_disabled(driver))
+		goto notest;
+
 	i = alg_find_test(alg);
 	j = alg_find_test(driver);
 	if (i < 0 && j < 0)
@@ -5264,7 +5326,7 @@ test_done:
 	return rc;
 
 notest:
-	printk(KERN_INFO "alg: No test for %s (%s)\n", alg, driver);
+	pr_debug(KERN_INFO "alg: No test for %s (%s)\n", alg, driver);
 	return 0;
 non_fips_alg:
 	return -EINVAL;

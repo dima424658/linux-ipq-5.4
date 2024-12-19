@@ -22,6 +22,7 @@
 #include <linux/nospec.h>
 #include "core.h"
 #include "rdev-ops.h"
+#include "nl80211.h"
 
 
 struct ieee80211_rate *
@@ -270,7 +271,12 @@ int cfg80211_validate_key_settings(struct cfg80211_registered_device *rdev,
 				   struct key_params *params, int key_idx,
 				   bool pairwise, const u8 *mac_addr)
 {
-	if (!cfg80211_valid_key_idx(rdev, key_idx, pairwise))
+	int max_key_idx = 5;
+
+	if (wiphy_ext_feature_isset(&rdev->wiphy,
+				    NL80211_EXT_FEATURE_BEACON_PROTECTION))
+		max_key_idx = 7;
+	if (key_idx < 0 || key_idx > max_key_idx)
 		return -EINVAL;
 
 	if (!pairwise && mac_addr && !(rdev->wiphy.flags & WIPHY_FLAG_IBSS_RSN))
@@ -921,7 +927,8 @@ void cfg80211_process_wdev_events(struct wireless_dev *wdev)
 			__cfg80211_disconnected(wdev->netdev,
 						ev->dc.ie, ev->dc.ie_len,
 						ev->dc.reason,
-						!ev->dc.locally_generated);
+						!ev->dc.locally_generated,
+						ev->dc.link_id);
 			break;
 		case EVENT_IBSS_JOINED:
 			__cfg80211_ibss_joined(wdev->netdev, ev->ij.bssid,
@@ -992,7 +999,7 @@ int cfg80211_change_iface(struct cfg80211_registered_device *rdev,
 		switch (otype) {
 		case NL80211_IFTYPE_AP:
 		case NL80211_IFTYPE_P2P_GO:
-			cfg80211_stop_ap(rdev, dev, true);
+			cfg80211_stop_ap(rdev, dev, true, NULL);
 			break;
 		case NL80211_IFTYPE_ADHOC:
 			cfg80211_leave_ibss(rdev, dev, false);
@@ -1626,6 +1633,9 @@ bool ieee80211_chandef_to_operating_class(struct cfg80211_chan_def *chandef,
 	case NL80211_CHAN_WIDTH_10:
 	case NL80211_CHAN_WIDTH_5:
 		return false; /* unsupported for now */
+	case NL80211_CHAN_WIDTH_320:
+		*op_class = 137;
+		return true; /* FIXME */
 	default:
 		vht_opclass = 0;
 		break;
@@ -1991,8 +2001,19 @@ bool cfg80211_does_bw_fit_range(const struct ieee80211_freq_range *freq_range,
 {
 	u32 start_freq_khz, end_freq_khz;
 
-	start_freq_khz = center_freq_khz - (bw_khz / 2);
-	end_freq_khz = center_freq_khz + (bw_khz / 2);
+	/* As 4.9GHz supports 5Mhz and 10 MHz center frequencies,
+	 * the offset calculation using the bw_khz may not work.
+	 * Therefore, apply center_freq_khz to start_freq_khz and
+	 * end_freq_khz directly for bw check.
+	 */
+	if (center_freq_khz >= MHZ_TO_KHZ(4940) &&
+	    center_freq_khz <= MHZ_TO_KHZ(5090)) {
+		start_freq_khz = center_freq_khz;
+		end_freq_khz = center_freq_khz;
+	} else {
+		start_freq_khz = center_freq_khz - (bw_khz / 2);
+		end_freq_khz = center_freq_khz + (bw_khz / 2);
+	}
 
 	if (start_freq_khz >= freq_range->start_freq_khz &&
 	    end_freq_khz <= freq_range->end_freq_khz)
@@ -2196,3 +2217,19 @@ bool cfg80211_iftype_allowed(struct wiphy *wiphy, enum nl80211_iftype iftype,
 	return false;
 }
 EXPORT_SYMBOL(cfg80211_iftype_allowed);
+
+void
+cfg80211_dfs_event_notify(struct wiphy *wiphy,
+			  struct cfg80211_chan_def *chandef,
+			  enum nl80211_radar_event event,
+			  struct net_device *dev,
+			  gfp_t gfp)
+{
+	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wiphy);
+
+	if (!rdev || !chandef ||!dev)
+		return;
+
+	nl80211_radar_notify(rdev, chandef, event, dev, gfp);
+}
+EXPORT_SYMBOL(cfg80211_dfs_event_notify);

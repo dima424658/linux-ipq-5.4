@@ -38,6 +38,9 @@ typedef struct {
 	__u8 b[16];
 } guid_t;
 
+#ifdef __APPLE__
+#define uuid_t compat_uuid_t
+#endif
 /* backwards compatibility, don't use in new code */
 typedef struct {
 	__u8 b[16];
@@ -1335,6 +1338,21 @@ static int do_wmi_entry(const char *filename, void *symval, char *alias)
 	return 1;
 }
 
+/* Looks like: mhi:S */
+static int do_mhi_entry(const char *filename, void *symval, char *alias)
+{
+	int len;
+	DEF_FIELD_ADDR(symval, mhi_device_id, chan);
+
+	len = snprintf(alias, ALIAS_SIZE, MHI_DEVICE_MODALIAS_FMT, *chan);
+	if (len < 0 || len >= ALIAS_SIZE) {
+		warn("Could not generate all MODULE_ALIAS's in '%s'\n",
+				filename);
+		return 0;
+	}
+	return 1;
+}
+
 /* Does namelen bytes of name exactly match the symbol? */
 static bool sym_is(const char *name, unsigned namelen, const char *symbol)
 {
@@ -1407,6 +1425,7 @@ static const struct devtable devtable[] = {
 	{"typec", SIZE_typec_device_id, do_typec_entry},
 	{"tee", SIZE_tee_client_device_id, do_tee_entry},
 	{"wmi", SIZE_wmi_device_id, do_wmi_entry},
+	{"mhi", SIZE_mhi_device_id, do_mhi_entry},
 };
 
 /* Create MODULE_ALIAS() statements.

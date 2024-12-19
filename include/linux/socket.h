@@ -2,7 +2,6 @@
 #ifndef _LINUX_SOCKET_H
 #define _LINUX_SOCKET_H
 
-
 #include <asm/socket.h>			/* arch-dependent defines	*/
 #include <linux/sockios.h>		/* the SIOCxxx I/O controls	*/
 #include <linux/uio.h>			/* iovec support		*/
@@ -210,7 +209,8 @@ struct ucred {
 				 */
 #define AF_XDP		44	/* XDP sockets			*/
 
-#define AF_MAX		45	/* For now.. */
+#define AF_OVPN		45	/* OpenVPN Sockets		*/
+#define AF_MAX		46	/* For now.. */
 
 /* Protocol families, same as address families. */
 #define PF_UNSPEC	AF_UNSPEC
@@ -260,6 +260,7 @@ struct ucred {
 #define PF_QIPCRTR	AF_QIPCRTR
 #define PF_SMC		AF_SMC
 #define PF_XDP		AF_XDP
+#define PF_OVPN		AF_OVPN
 #define PF_MAX		AF_MAX
 
 /* Maximum queue length specifiable by listen.  */
@@ -306,7 +307,6 @@ struct ucred {
 #else
 #define MSG_CMSG_COMPAT	0		/* We never have 32 bit fixups */
 #endif
-
 
 /* Setsockoptions(2) level. Thanks to BSD these must match IPPROTO_xxx */
 #define SOL_IP		0

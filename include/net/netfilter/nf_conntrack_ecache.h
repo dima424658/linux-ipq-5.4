@@ -72,6 +72,43 @@ struct nf_ct_event {
 	int report;
 };
 
+#ifdef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
+extern int nf_conntrack_register_notifier(struct net *net,
+					  struct notifier_block *nb);
+extern int nf_conntrack_unregister_notifier(struct net *net,
+					    struct notifier_block *nb);
+static inline int
+nf_conntrack_eventmask_report(unsigned int eventmask,
+			      struct nf_conn *ct,
+			      u32 portid,
+			      int report)
+{
+	struct nf_conntrack_ecache *e;
+	struct net *net = nf_ct_net(ct);
+
+	e = nf_ct_ecache_find(ct);
+	if (e == NULL)
+		return 0;
+
+	if (nf_ct_is_confirmed(ct)) {
+		struct nf_ct_event item = {
+			.ct = ct,
+			.portid = e->portid ? e->portid : portid,
+			.report = report
+		};
+		/* This is a resent of a destroy event? If so, skip missed */
+		unsigned long missed = e->portid ? 0 : e->missed;
+
+		if (!((eventmask | missed) & e->ctmask))
+			return 0;
+
+		atomic_notifier_call_chain(&net->ct.nf_conntrack_chain,
+					   eventmask | missed, &item);
+	}
+
+	return 0;
+}
+#else
 struct nf_ct_event_notifier {
 	int (*fcn)(unsigned int events, struct nf_ct_event *item);
 };
@@ -80,10 +117,11 @@ int nf_conntrack_register_notifier(struct net *net,
 				   struct nf_ct_event_notifier *nb);
 void nf_conntrack_unregister_notifier(struct net *net,
 				      struct nf_ct_event_notifier *nb);
-
-void nf_ct_deliver_cached_events(struct nf_conn *ct);
 int nf_conntrack_eventmask_report(unsigned int eventmask, struct nf_conn *ct,
 				  u32 portid, int report);
+#endif
+
+void nf_ct_deliver_cached_events(struct nf_conn *ct);
 
 #else
 
@@ -105,11 +143,13 @@ static inline void
 nf_conntrack_event_cache(enum ip_conntrack_events event, struct nf_conn *ct)
 {
 #ifdef CONFIG_NF_CONNTRACK_EVENTS
-	struct net *net = nf_ct_net(ct);
 	struct nf_conntrack_ecache *e;
+#ifndef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
+	struct net *net = nf_ct_net(ct);
 
 	if (!rcu_access_pointer(net->ct.nf_conntrack_event_cb))
 		return;
+#endif
 
 	e = nf_ct_ecache_find(ct);
 	if (e == NULL)
@@ -124,11 +164,12 @@ nf_conntrack_event_report(enum ip_conntrack_events event, struct nf_conn *ct,
 			  u32 portid, int report)
 {
 #ifdef CONFIG_NF_CONNTRACK_EVENTS
+#ifndef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
 	const struct net *net = nf_ct_net(ct);
 
 	if (!rcu_access_pointer(net->ct.nf_conntrack_event_cb))
 		return 0;
-
+#endif
 	return nf_conntrack_eventmask_report(1 << event, ct, portid, report);
 #else
 	return 0;
@@ -139,11 +180,12 @@ static inline int
 nf_conntrack_event(enum ip_conntrack_events event, struct nf_conn *ct)
 {
 #ifdef CONFIG_NF_CONNTRACK_EVENTS
+#ifndef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
 	const struct net *net = nf_ct_net(ct);
 
 	if (!rcu_access_pointer(net->ct.nf_conntrack_event_cb))
 		return 0;
-
+#endif
 	return nf_conntrack_eventmask_report(1 << event, ct, 0, 0);
 #else
 	return 0;

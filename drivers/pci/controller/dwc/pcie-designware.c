@@ -13,6 +13,7 @@
 #include <linux/types.h>
 
 #include "pcie-designware.h"
+#include "pcie-designware-debugfs.h"
 
 /*
  * These interfaces resemble the pci_find_*capability() interfaces, but these
@@ -87,6 +88,22 @@ static u16 dw_pcie_find_next_ext_capability(struct dw_pcie *pci, u16 start,
 
 	return 0;
 }
+
+u16 dw_pcie_find_vsec_capability(struct dw_pcie *pci, u8 vsec_cap)
+{
+	u16 vsec = 0;
+	u32 header;
+
+	while ((vsec = dw_pcie_find_next_ext_capability(pci, vsec,
+					PCI_EXT_CAP_ID_VNDR))) {
+		header = dw_pcie_readl_dbi(pci, vsec + PCI_VNDR_HEADER);
+		if (PCI_VNDR_HEADER_ID(header) == vsec_cap)
+			return vsec;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(dw_pcie_find_vsec_capability);
 
 u16 dw_pcie_find_ext_capability(struct dw_pcie *pci, u8 cap)
 {
@@ -445,10 +462,16 @@ void dw_pcie_disable_atu(struct dw_pcie *pci, int index,
 
 int dw_pcie_wait_for_link(struct dw_pcie *pci)
 {
-	int retries;
+	int retries, max_link_retries;
+	u32 val;
+
+	if(pci->link_retries_count != 0)
+		max_link_retries = pci->link_retries_count;
+	else
+		max_link_retries = LINK_WAIT_MAX_RETRIES;
 
 	/* Check if the link is up or not */
-	for (retries = 0; retries < LINK_WAIT_MAX_RETRIES; retries++) {
+	for (retries = 0; retries < max_link_retries; retries++) {
 		if (dw_pcie_link_up(pci)) {
 			dev_info(pci->dev, "Link up\n");
 			return 0;
@@ -456,7 +479,11 @@ int dw_pcie_wait_for_link(struct dw_pcie *pci)
 		usleep_range(LINK_WAIT_USLEEP_MIN, LINK_WAIT_USLEEP_MAX);
 	}
 
-	dev_info(pci->dev, "Phy link never came up\n");
+	if (pci->ops->ltssm_read) {
+		pci->ops->ltssm_read(pci, &val);
+		dev_info(pci->dev, "Phy link never came up. PARF_LTSSM: 0x%x\n",val);
+	} else
+		dev_info(pci->dev, "Phy link nave came up\n");
 
 	return -ETIMEDOUT;
 }
@@ -473,6 +500,7 @@ int dw_pcie_link_up(struct dw_pcie *pci)
 	return ((val & PCIE_PORT_DEBUG1_LINK_UP) &&
 		(!(val & PCIE_PORT_DEBUG1_LINK_IN_TRAINING)));
 }
+EXPORT_SYMBOL_GPL(dw_pcie_link_up);
 
 static u8 dw_pcie_iatu_unroll_enabled(struct dw_pcie *pci)
 {
@@ -556,4 +584,8 @@ void dw_pcie_setup(struct dw_pcie *pci)
 		       PCIE_PL_CHK_REG_CHK_REG_START;
 		dw_pcie_writel_dbi(pci, PCIE_PL_CHK_REG_CONTROL_STATUS, val);
 	}
+
+	ret = create_debugfs_files(pci);
+	if (ret)
+		dev_err(pci->dev, "Couldn't create debugfs files\n");
 }

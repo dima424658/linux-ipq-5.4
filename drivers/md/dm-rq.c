@@ -46,6 +46,15 @@ unsigned dm_get_reserved_rq_based_ios(void)
 }
 EXPORT_SYMBOL_GPL(dm_get_reserved_rq_based_ios);
 
+union map_info *dm_get_rq_mapinfo(struct request *rq)
+{
+	if (rq && rq->end_io_data) {
+		return &((struct dm_rq_target_io *)rq->end_io_data)->info;
+	}
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(dm_get_rq_mapinfo);
+
 static unsigned dm_get_blk_mq_nr_hw_queues(void)
 {
 	return __dm_get_module_param(&dm_mq_nr_hw_queues, 1, 32);
@@ -544,7 +553,7 @@ int dm_mq_init_request_queue(struct mapped_device *md, struct dm_table *t)
 	md->tag_set->ops = &dm_mq_ops;
 	md->tag_set->queue_depth = dm_get_blk_mq_queue_depth();
 	md->tag_set->numa_node = md->numa_node_id;
-	md->tag_set->flags = BLK_MQ_F_SHOULD_MERGE;
+	md->tag_set->flags = BLK_MQ_F_SHOULD_MERGE | BLK_MQ_F_BLOCKING;
 	md->tag_set->nr_hw_queues = dm_get_blk_mq_nr_hw_queues();
 	md->tag_set->driver_data = md;
 

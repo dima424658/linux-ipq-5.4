@@ -36,6 +36,8 @@
 #include <linux/virtio_ring.h>
 #include <asm/byteorder.h>
 #include <linux/platform_device.h>
+#include <linux/delay.h>
+#include <linux/of_platform.h>
 
 #include "remoteproc_internal.h"
 
@@ -43,6 +45,7 @@
 
 static DEFINE_MUTEX(rproc_list_mutex);
 static LIST_HEAD(rproc_list);
+struct workqueue_struct *rproc_wq;
 
 typedef int (*rproc_handle_resources_t)(struct rproc *rproc,
 				struct resource_table *table, int len);
@@ -53,6 +56,8 @@ static int rproc_alloc_carveout(struct rproc *rproc,
 				struct rproc_mem_entry *mem);
 static int rproc_release_carveout(struct rproc *rproc,
 				  struct rproc_mem_entry *mem);
+static int rproc_panic_handler(struct notifier_block *this,
+				unsigned long event, void *ptr);
 
 /* Unique indices for remoteproc devices */
 static DEFINE_IDA(rproc_dev_index);
@@ -61,6 +66,11 @@ static const char * const rproc_crash_names[] = {
 	[RPROC_MMUFAULT]	= "mmufault",
 	[RPROC_WATCHDOG]	= "watchdog",
 	[RPROC_FATAL_ERROR]	= "fatal error",
+};
+
+static struct notifier_block panic_nb = {
+	.notifier_call  = rproc_panic_handler,
+	.priority = 100,
 };
 
 /* translate rproc_crash_type to string */
@@ -1294,12 +1304,13 @@ static void rproc_resource_cleanup(struct rproc *rproc)
 	rproc_coredump_cleanup(rproc);
 }
 
-static int rproc_start(struct rproc *rproc, const struct firmware *fw)
+int rproc_start(struct rproc *rproc, const struct firmware *fw)
 {
 	struct resource_table *loaded_table;
 	struct device *dev = &rproc->dev;
 	int ret;
 
+	rproc_subsys_notify(rproc, SUBSYS_BEFORE_POWERUP, false);
 	/* load the ELF segments to memory */
 	ret = rproc_load_segments(rproc, fw);
 	if (ret) {
@@ -1343,6 +1354,7 @@ static int rproc_start(struct rproc *rproc, const struct firmware *fw)
 		goto stop_rproc;
 	}
 
+	rproc_subsys_notify(rproc, SUBSYS_AFTER_POWERUP, false);
 	rproc->state = RPROC_RUNNING;
 
 	dev_info(dev, "remote processor %s is now up\n", rproc->name);
@@ -1358,6 +1370,7 @@ reset_table_ptr:
 
 	return ret;
 }
+EXPORT_SYMBOL(rproc_start);
 
 /*
  * take a firmware and boot a remote processor with it.
@@ -1372,7 +1385,10 @@ static int rproc_fw_boot(struct rproc *rproc, const struct firmware *fw)
 	if (ret)
 		return ret;
 
-	dev_info(dev, "Booting fw image %s, size %zd\n", name, fw->size);
+	if (fw)
+		dev_info(dev, "Booting fw image %s, size %zd\n", name, fw->size);
+	else
+		dev_info(dev, "Skipping fw load \n");
 
 	/*
 	 * if enabling an IOMMU isn't relevant for this rproc, this is
@@ -1384,7 +1400,8 @@ static int rproc_fw_boot(struct rproc *rproc, const struct firmware *fw)
 		return ret;
 	}
 
-	rproc->bootaddr = rproc_get_boot_addr(rproc, fw);
+	if (!rproc->backdoor)
+		rproc->bootaddr = rproc_get_boot_addr(rproc, fw);
 
 	/* Load resource table, core dump segment list etc from the firmware */
 	ret = rproc_parse_fw(rproc, fw);
@@ -1449,6 +1466,8 @@ static int rproc_trigger_auto_boot(struct rproc *rproc)
 {
 	int ret;
 
+	if (rproc->backdoor)
+		return 0;
 	/*
 	 * We're initiating an asynchronous firmware loading, so we can
 	 * be built-in kernel code, without hanging the boot process.
@@ -1462,11 +1481,12 @@ static int rproc_trigger_auto_boot(struct rproc *rproc)
 	return ret;
 }
 
-static int rproc_stop(struct rproc *rproc, bool crashed)
+int rproc_stop(struct rproc *rproc, bool crashed)
 {
 	struct device *dev = &rproc->dev;
 	int ret;
 
+	rproc_subsys_notify(rproc, SUBSYS_BEFORE_SHUTDOWN, false);
 	/* Stop any subdevices for the remote processor */
 	rproc_stop_subdevices(rproc, crashed);
 
@@ -1481,6 +1501,7 @@ static int rproc_stop(struct rproc *rproc, bool crashed)
 	}
 
 	rproc_unprepare_subdevices(rproc);
+	rproc_subsys_notify(rproc, SUBSYS_AFTER_SHUTDOWN, false);
 
 	rproc->state = RPROC_OFFLINE;
 
@@ -1488,6 +1509,7 @@ static int rproc_stop(struct rproc *rproc, bool crashed)
 
 	return 0;
 }
+EXPORT_SYMBOL(rproc_stop);
 
 /**
  * rproc_coredump_add_segment() - add segment of device memory to coredump
@@ -1650,7 +1672,7 @@ static void rproc_coredump(struct rproc *rproc)
  */
 int rproc_trigger_recovery(struct rproc *rproc)
 {
-	const struct firmware *firmware_p;
+	const struct firmware *firmware_p = NULL;
 	struct device *dev = &rproc->dev;
 	int ret;
 
@@ -1664,14 +1686,17 @@ int rproc_trigger_recovery(struct rproc *rproc)
 	if (ret)
 		goto unlock_mutex;
 
+	rproc_subsys_notify(rproc, SUBSYS_RAMDUMP_NOTIFICATION, false);
 	/* generate coredump */
-	rproc_coredump(rproc);
+	rproc->ops->coredump(rproc);
 
-	/* load firmware */
-	ret = request_firmware(&firmware_p, rproc->firmware, dev);
-	if (ret < 0) {
-		dev_err(dev, "request_firmware failed: %d\n", ret);
-		goto unlock_mutex;
+	if (!rproc->backdoor) {
+		/* load firmware */
+		ret = request_firmware(&firmware_p, rproc->firmware, dev);
+		if (ret < 0) {
+			dev_err(dev, "request_firmware failed: %d\n", ret);
+			goto unlock_mutex;
+		}
 	}
 
 	/* boot the remote processor up again */
@@ -1713,6 +1738,9 @@ static void rproc_crash_handler_work(struct work_struct *work)
 
 	if (!rproc->recovery_disabled)
 		rproc_trigger_recovery(rproc);
+	else
+		panic("remoteproc %s: Resetting the SoC - %s crashed",
+				dev_name(&rproc->dev), rproc->name);
 }
 
 /**
@@ -1728,7 +1756,7 @@ static void rproc_crash_handler_work(struct work_struct *work)
  */
 int rproc_boot(struct rproc *rproc)
 {
-	const struct firmware *firmware_p;
+	const struct firmware *firmware_p = NULL;
 	struct device *dev;
 	int ret;
 
@@ -1759,11 +1787,13 @@ int rproc_boot(struct rproc *rproc)
 
 	dev_info(dev, "powering up %s\n", rproc->name);
 
-	/* load firmware */
-	ret = request_firmware(&firmware_p, rproc->firmware, dev);
-	if (ret < 0) {
-		dev_err(dev, "request_firmware failed: %d\n", ret);
-		goto downref_rproc;
+	if (!rproc->backdoor) {
+		/* load firmware */
+		ret = request_firmware(&firmware_p, rproc->firmware, dev);
+		if (ret < 0) {
+			dev_err(dev, "request_firmware failed: %d\n", ret);
+			goto downref_rproc;
+		}
 	}
 
 	ret = rproc_fw_boot(rproc, firmware_p);
@@ -1963,6 +1993,30 @@ static const struct device_type rproc_type = {
 	.release	= rproc_type_release,
 };
 
+static int rproc_alloc_ops(struct rproc *rproc, const struct rproc_ops *ops)
+{
+	rproc->ops = kmemdup(ops, sizeof(*ops), GFP_KERNEL);
+	if (!rproc->ops)
+		return -ENOMEM;
+
+	/* Default to rproc_coredump if no coredump function is specified */
+	if (!rproc->ops->coredump)
+		rproc->ops->coredump = rproc_coredump;
+
+	if (rproc->ops->load)
+		return 0;
+
+	/* Default to ELF loader if no load function is specified */
+	rproc->ops->load = rproc_elf_load_segments;
+	rproc->ops->parse_fw = rproc_elf_load_rsc_table;
+	rproc->ops->find_loaded_rsc_table = rproc_elf_find_loaded_rsc_table;
+	if (!rproc->ops->sanity_check)
+		rproc->ops->sanity_check = rproc_elf_sanity_check;
+	rproc->ops->get_boot_addr = rproc_elf_get_boot_addr;
+
+	return 0;
+}
+
 /**
  * rproc_alloc() - allocate a remote processor handle
  * @dev: the underlying device
@@ -2019,8 +2073,7 @@ struct rproc *rproc_alloc(struct device *dev, const char *name,
 		return NULL;
 	}
 
-	rproc->ops = kmemdup(ops, sizeof(*ops), GFP_KERNEL);
-	if (!rproc->ops) {
+	if (rproc_alloc_ops(rproc, ops)) {
 		kfree(p);
 		kfree(rproc);
 		return NULL;
@@ -2050,15 +2103,6 @@ struct rproc *rproc_alloc(struct device *dev, const char *name,
 
 	atomic_set(&rproc->power, 0);
 
-	/* Default to ELF loader if no load function is specified */
-	if (!rproc->ops->load) {
-		rproc->ops->load = rproc_elf_load_segments;
-		rproc->ops->parse_fw = rproc_elf_load_rsc_table;
-		rproc->ops->find_loaded_rsc_table = rproc_elf_find_loaded_rsc_table;
-		rproc->ops->sanity_check = rproc_elf_sanity_check;
-		rproc->ops->get_boot_addr = rproc_elf_get_boot_addr;
-	}
-
 	mutex_init(&rproc->lock);
 
 	INIT_LIST_HEAD(&rproc->carveouts);
@@ -2069,6 +2113,8 @@ struct rproc *rproc_alloc(struct device *dev, const char *name,
 	INIT_LIST_HEAD(&rproc->dump_segments);
 
 	INIT_WORK(&rproc->crash_handler, rproc_crash_handler_work);
+	ATOMIC_INIT_NOTIFIER_HEAD(&rproc->atomic_nlist);
+	BLOCKING_INIT_NOTIFIER_HEAD(&rproc->nlist);
 
 	rproc->state = RPROC_OFFLINE;
 
@@ -2190,6 +2236,113 @@ struct rproc *rproc_get_by_child(struct device *dev)
 }
 EXPORT_SYMBOL(rproc_get_by_child);
 
+static int rproc_panic_handler(struct notifier_block *this,
+				unsigned long event, void *ptr)
+{
+	struct rproc *r;
+
+	mutex_lock(&rproc_list_mutex);
+	list_for_each_entry(r, &rproc_list, node) {
+		if (r->ops->report_panic)
+			r->ops->report_panic(r);
+	}
+	mutex_unlock(&rproc_list_mutex);
+	return 0;
+}
+
+/**
+ * rproc_get_by_name() - acquire rproc instance by rproc name
+ * @name: name of the rproc device
+ *
+ * Returns the rproc instance, or NULL if not found.
+ */
+struct rproc *rproc_get_by_name(const char* name)
+{
+	struct rproc *rproc = NULL, *r;
+
+	mutex_lock(&rproc_list_mutex);
+	list_for_each_entry(r, &rproc_list, node) {
+		if(!strcmp(r->name, name)) {
+			rproc = r;
+			break;
+		}
+	}
+	mutex_unlock(&rproc_list_mutex);
+
+	return rproc;
+}
+EXPORT_SYMBOL(rproc_get_by_name);
+
+/**
+ * rproc_register_subsys_notifier() - register for subsys start, stop events
+ * @name: name of the rproc device
+ * @nb - notifier bloc
+ * @atomic-nb - atomic notifier block
+ * Returns 0 on success else error
+ */
+int rproc_register_subsys_notifier(const char *name, struct notifier_block *nb,
+		struct notifier_block *atomic_nb)
+{
+	struct rproc *rproc = rproc_get_by_name(name);
+	int ret = 0;
+
+	if(!rproc)
+		return -ENODEV;
+
+	if (atomic_nb)
+		ret = atomic_notifier_chain_register(&rproc->atomic_nlist,
+								atomic_nb);
+	if (!ret)
+		ret = blocking_notifier_chain_register(&rproc->nlist, nb);
+
+	return ret;
+}
+EXPORT_SYMBOL(rproc_register_subsys_notifier);
+/**
+ * rproc_unregister_subsys_notifier() - register for subsys start, stop events
+ * @name: name of the rproc device
+ * @nb - notifier bloc
+ * @atomic-nb - atomic notifier block
+ * Returns 0 on success else error
+ */
+int rproc_unregister_subsys_notifier(const char *name, struct notifier_block *nb,
+		struct notifier_block *atomic_nb)
+{
+	struct rproc *rproc = rproc_get_by_name(name);
+	int ret = 0;
+
+	if(!rproc)
+		return -ENODEV;
+
+	if (atomic_nb)
+		ret = atomic_notifier_chain_unregister(&rproc->atomic_nlist,
+								atomic_nb);
+	if (!ret)
+		ret = blocking_notifier_chain_unregister(&rproc->nlist, nb);
+
+	return ret;
+}
+EXPORT_SYMBOL(rproc_unregister_subsys_notifier);
+
+/**
+ * rproc_subsys_notify() - notify sub system event
+ * @rproc rproc instance
+ * @event, event to be notified
+ * @atomic to be notified as task or atomic context
+ */
+void rproc_subsys_notify(struct rproc *rproc, int event, bool atomic)
+{
+	struct platform_device *pdev;
+
+	pdev = of_find_device_by_node(rproc->dev.parent->of_node);
+	if (!atomic && (event == SUBSYS_AFTER_POWERUP))
+		msleep(100);
+
+	if (atomic)
+		atomic_notifier_call_chain(&rproc->atomic_nlist, event, pdev);
+	else
+		blocking_notifier_call_chain(&rproc->nlist, event, pdev);
+}
 /**
  * rproc_report_crash() - rproc crash reporter function
  * @rproc: remote processor
@@ -2208,20 +2361,25 @@ void rproc_report_crash(struct rproc *rproc, enum rproc_crash_type type)
 		return;
 	}
 
+	rproc_subsys_notify(rproc, SUBSYS_PREPARE_FOR_FATAL_SHUTDOWN, true);
 	dev_err(&rproc->dev, "crash detected in %s: type %s\n",
 		rproc->name, rproc_crash_to_string(type));
 
 	/* create a new task to handle the error */
-	schedule_work(&rproc->crash_handler);
+	queue_work(rproc_wq, &rproc->crash_handler);
 }
 EXPORT_SYMBOL(rproc_report_crash);
 
 static int __init remoteproc_init(void)
 {
+	rproc_wq = alloc_workqueue("rproc_wq", WQ_CPU_INTENSIVE, 0);
+	BUG_ON(!rproc_wq);
+
 	rproc_init_sysfs();
 	rproc_init_debugfs();
 
-	return 0;
+	return atomic_notifier_chain_register(&panic_notifier_list,
+						&panic_nb);
 }
 subsys_initcall(remoteproc_init);
 
@@ -2231,6 +2389,7 @@ static void __exit remoteproc_exit(void)
 
 	rproc_exit_debugfs();
 	rproc_exit_sysfs();
+	destroy_workqueue(rproc_wq);
 }
 module_exit(remoteproc_exit);
 

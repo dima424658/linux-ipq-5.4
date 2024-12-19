@@ -26,6 +26,7 @@
 #include <linux/list.h>
 #include <linux/init.h>
 #include <linux/mtd/mtd.h>
+#include <linux/mtd/partitions.h>
 #include <linux/mutex.h>
 #include <linux/mount.h>
 #include <linux/slab.h>
@@ -48,6 +49,7 @@ static struct page *page_read(struct address_space *mapping, int index)
 {
 	return read_mapping_page(mapping, index, NULL);
 }
+char parent_mtd_name[80];
 
 /* erase a specified part of the device */
 static int _block2mtd_erase(struct block2mtd_dev *dev, loff_t to, size_t len)
@@ -128,6 +130,24 @@ static int block2mtd_read(struct mtd_info *mtd, loff_t from, size_t len,
 		index++;
 	}
 	return 0;
+}
+
+static int block2mtd_read_oob(struct mtd_info *mtd, loff_t from,
+			 struct mtd_oob_ops *ops)
+{
+	struct mtd_info *parent_mtd;
+	int ret = 0;
+	char *ptr_mtd_name = parent_mtd_name;
+
+	if (ops->datbuf)
+		ret = block2mtd_read(mtd, from, ops->len, &ops->retlen,
+						ops->datbuf);
+	else if (ptr_mtd_name) {
+		parent_mtd = get_mtd_device_nm(ptr_mtd_name);
+		ret = mtd_read_oob(parent_mtd, from, ops);
+	}
+
+	return ret;
 }
 
 
@@ -212,9 +232,22 @@ static void block2mtd_free_device(struct block2mtd_dev *dev)
 	kfree(dev);
 }
 
+static int block2mtd_isbad(struct mtd_info *mtd, loff_t from)
+{
+	struct mtd_info *parent_mtd;
+	int ret = 0;
+	char *ptr_mtd_name = parent_mtd_name;
+
+	if (ptr_mtd_name) {
+		parent_mtd = get_mtd_device_nm(ptr_mtd_name);
+		ret = mtd_block_isbad(parent_mtd, from);
+	}
+
+	return ret;
+}
 
 static struct block2mtd_dev *add_device(char *devname, int erase_size,
-		int timeout)
+		const char *mtdname, int timeout)
 {
 #ifndef MODULE
 	int i;
@@ -222,6 +255,7 @@ static struct block2mtd_dev *add_device(char *devname, int erase_size,
 	const fmode_t mode = FMODE_READ | FMODE_WRITE | FMODE_EXCL;
 	struct block_device *bdev;
 	struct block2mtd_dev *dev;
+	struct mtd_partition *part;
 	char *name;
 
 	if (!devname)
@@ -278,26 +312,34 @@ static struct block2mtd_dev *add_device(char *devname, int erase_size,
 
 	/* Setup the MTD structure */
 	/* make the name contain the block device in */
-	name = kasprintf(GFP_KERNEL, "block2mtd: %s", devname);
+	if (!mtdname)
+		mtdname = devname;
+	name = kmalloc(strlen(mtdname) + 1, GFP_KERNEL);
 	if (!name)
 		goto err_destroy_mutex;
 
+	strcpy(name, mtdname);
 	dev->mtd.name = name;
 
-	dev->mtd.size = dev->blkdev->bd_inode->i_size & PAGE_MASK;
+	dev->mtd.size = dev->blkdev->bd_inode->i_size & PAGE_MASK & ~(erase_size - 1);
 	dev->mtd.erasesize = erase_size;
 	dev->mtd.writesize = 1;
 	dev->mtd.writebufsize = PAGE_SIZE;
-	dev->mtd.type = MTD_RAM;
-	dev->mtd.flags = MTD_CAP_RAM;
+	dev->mtd.type = MTD_NANDFLASH;
+	dev->mtd.flags = MTD_CAP_NANDFLASH;
 	dev->mtd._erase = block2mtd_erase;
 	dev->mtd._write = block2mtd_write;
 	dev->mtd._sync = block2mtd_sync;
-	dev->mtd._read = block2mtd_read;
+	dev->mtd._read_oob = block2mtd_read_oob;
+	dev->mtd._block_isbad = block2mtd_isbad;
 	dev->mtd.priv = dev;
 	dev->mtd.owner = THIS_MODULE;
 
-	if (mtd_device_register(&dev->mtd, NULL, 0)) {
+	part = kzalloc(sizeof(struct mtd_partition), GFP_KERNEL);
+	part->name = name;
+	part->offset = 0;
+	part->size = dev->mtd.size;
+	if (mtd_device_register(&dev->mtd, part, 1)) {
 		/* Device didn't get added, so free the entry */
 		goto err_destroy_mutex;
 	}
@@ -305,8 +347,7 @@ static struct block2mtd_dev *add_device(char *devname, int erase_size,
 	list_add(&dev->list, &blkmtd_device_list);
 	pr_info("mtd%d: [%s] erase_size = %dKiB [%d]\n",
 		dev->mtd.index,
-		dev->mtd.name + strlen("block2mtd: "),
-		dev->mtd.erasesize >> 10, dev->mtd.erasesize);
+		mtdname, dev->mtd.erasesize >> 10, dev->mtd.erasesize);
 	return dev;
 
 err_destroy_mutex:
@@ -378,10 +419,13 @@ static char block2mtd_paramline[80 + 12];
 
 static int block2mtd_setup2(const char *val)
 {
-	/* 80 for device, 12 for erase size, 80 for name, 8 for timeout */
-	char buf[80 + 12 + 80 + 8];
+	/*
+	 * 80 for device, 12 for erase size, 80 for name,
+	 * 80 for parent mtd device name 8 for timeout.
+	 */
+	char buf[80 + 12 + 80 + 80 + 8];
 	char *str = buf;
-	char *token[2];
+	char *token[5];
 	char *name;
 	size_t erase_size = PAGE_SIZE;
 	unsigned long timeout = MTD_DEFAULT_TIMEOUT;
@@ -395,7 +439,7 @@ static int block2mtd_setup2(const char *val)
 	strcpy(str, val);
 	kill_final_newline(str);
 
-	for (i = 0; i < 2; i++)
+	for (i = 0; i < 5; i++)
 		token[i] = strsep(&str, ",");
 
 	if (str) {
@@ -421,8 +465,16 @@ static int block2mtd_setup2(const char *val)
 			return 0;
 		}
 	}
+	if (token[2] && (strlen(token[2]) + 1 > 80))
+		pr_err("mtd device name too long\n");
 
-	add_device(name, erase_size, timeout);
+	if (token[3] && (strlen(token[3]) + 1 > 80))
+		pr_err("parent mtd device name too long\n");
+
+	if (token[4] && kstrtoul(token[4], 0, &timeout))
+		pr_err("invalid timeout\n");
+	strlcpy(parent_mtd_name, token[3], sizeof(parent_mtd_name));
+	add_device(name, erase_size, token[2], timeout);
 
 	return 0;
 }
@@ -456,7 +508,7 @@ static int block2mtd_setup(const char *val, const struct kernel_param *kp)
 
 
 module_param_call(block2mtd, block2mtd_setup, NULL, NULL, 0200);
-MODULE_PARM_DESC(block2mtd, "Device to use. \"block2mtd=<dev>[,<erasesize>]\"");
+MODULE_PARM_DESC(block2mtd, "Device to use. \"block2mtd=<dev>[,<erasesize>[,<name>[,<timeout>]]]\"");
 
 static int __init block2mtd_init(void)
 {

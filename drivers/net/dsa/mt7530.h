@@ -37,6 +37,9 @@ enum {
 #define  CPU_EN				BIT(7)
 #define  CPU_PORT(x)			((x) << 4)
 #define  CPU_MASK			(0xf << 4)
+#define  MIRROR_EN			BIT(3)
+#define  MIRROR_PORT(x)			((x) & 0x7)
+#define  MIRROR_MASK			0x7
 
 /* Registers for address table access */
 #define MT7530_ATA1			0x74
@@ -142,6 +145,8 @@ enum mt7530_stp_state {
 
 /* Register for port control */
 #define MT7530_PCR_P(x)			(0x2004 + ((x) * 0x100))
+#define  PORT_TX_MIR			BIT(9)
+#define  PORT_RX_MIR			BIT(8)
 #define  PORT_VLAN(x)			((x) & 0x3)
 
 enum mt7530_port_mode {
@@ -207,6 +212,8 @@ enum mt7530_vlan_port_attr {
 #define  PMCR_RX_EN			BIT(13)
 #define  PMCR_BACKOFF_EN		BIT(9)
 #define  PMCR_BACKPR_EN			BIT(8)
+#define  PMCR_FORCE_EEE1G		BIT(7)
+#define  PMCR_FORCE_EEE100		BIT(6)
 #define  PMCR_TX_FC_EN			BIT(5)
 #define  PMCR_RX_FC_EN			BIT(4)
 #define  PMCR_FORCE_SPEED_1000		BIT(3)
@@ -227,6 +234,12 @@ enum mt7530_vlan_port_attr {
 #define  PMSR_SPEED_MASK		(PMSR_SPEED_100 | PMSR_SPEED_1000)
 #define  PMSR_DPX			BIT(1)
 #define  PMSR_LINK			BIT(0)
+
+#define MT7530_PMEEECR_P(x)		(0x3004 + (x) * 0x100)
+#define  WAKEUP_TIME_1000(x)		((x & 0xFF) << 24)
+#define  WAKEUP_TIME_100(x)		((x & 0xFF) << 16)
+#define  LPI_THRESH(x)			((x & 0xFFF) << 4)
+#define  LPI_MODE_EN			BIT(0)
 
 /* Register for MIB */
 #define MT7530_PORT_MIB_COUNTER(x)	(0x4000 + (x) * 0x100)
@@ -464,6 +477,9 @@ struct mt7530_priv {
 	phy_interface_t		p6_interface;
 	phy_interface_t		p5_interface;
 	unsigned int		p5_intf_sel;
+	u8			mirror_rx;
+	u8			mirror_tx;
+	u8			eee_enable;
 
 	struct mt7530_port	ports[MT7530_NUM_PORTS];
 	/* protect among processes for registers access*/

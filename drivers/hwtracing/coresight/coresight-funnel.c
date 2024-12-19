@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2012,2017, 2020, The Linux Foundation. All rights reserved.
  *
  * Description: CoreSight Funnel driver
  */
@@ -31,6 +31,8 @@
 #define FUNNEL_ENSx_MASK	0xff
 
 DEFINE_CORESIGHT_DEVLIST(funnel_devs, "funnel");
+
+#define FUNNEL_MAX_PORT		7
 
 /**
  * struct funnel_drvdata - specifics associated to a funnel component
@@ -194,7 +196,26 @@ static ssize_t funnel_ctrl_show(struct device *dev,
 
 	return sprintf(buf, "%#x\n", val);
 }
-static DEVICE_ATTR_RO(funnel_ctrl);
+
+static ssize_t funnel_ctrl_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t size)
+{
+	int ret, port;
+	struct funnel_drvdata *drvdata = dev_get_drvdata(dev->parent);
+
+	ret = kstrtoint(buf, 0, &port);
+	if (ret)
+		return ret;
+
+	if (port < 0 || port > FUNNEL_MAX_PORT)
+		return -EINVAL;
+
+	funnel_enable(drvdata->csdev, port, 0);
+
+	return size;
+}
+static DEVICE_ATTR_RW(funnel_ctrl);
 
 static struct attribute *coresight_funnel_attrs[] = {
 	&dev_attr_funnel_ctrl.attr,
@@ -215,7 +236,8 @@ static int funnel_probe(struct device *dev, struct resource *res)
 	    of_device_is_compatible(dev->of_node, "arm,coresight-funnel"))
 		dev_warn_once(dev, "Uses OBSOLETE CoreSight funnel binding\n");
 
-	desc.name = coresight_alloc_device_name(&funnel_devs, dev);
+	if (of_property_read_string(dev->of_node, "coresight-name", &desc.name))
+		desc.name = coresight_alloc_device_name(&funnel_devs, dev);
 	if (!desc.name)
 		return -ENOMEM;
 
@@ -245,6 +267,8 @@ static int funnel_probe(struct device *dev, struct resource *res)
 	}
 
 	dev_set_drvdata(dev, drvdata);
+
+	spin_lock_init(&drvdata->spinlock);
 
 	pdata = coresight_get_platform_data(dev);
 	if (IS_ERR(pdata)) {

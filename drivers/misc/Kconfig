@@ -433,6 +433,13 @@ config VEXPRESS_SYSCFG
 	  bus. System Configuration interface is one of the possible means
 	  of generating transactions on this bus.
 
+config QSEECOM
+	tristate "QSEECOM Client Driver"
+	default m
+	---help---
+	  This is a kernel client driver that demonstrates a communication i/f
+	  between userspace and QSEE using Secure Channel Manager (SCM) i/f.
+
 config PCI_ENDPOINT_TEST
 	depends on PCI
 	select CRC32

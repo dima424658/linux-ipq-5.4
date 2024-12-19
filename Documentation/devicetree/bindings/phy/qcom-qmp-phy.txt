@@ -6,7 +6,12 @@ controllers on Qualcomm chipsets, such as, PCIe, UFS, and USB.
 
 Required properties:
  - compatible: compatible list, contains:
+	       "qcom,ipq6018-qmp-usb3-phy" for USB3 QMP phy on IPQ6018
+	       "qcom,ipq9048-qmp-usb3-phy" for USB3 QMP phy on IPQ9048
 	       "qcom,ipq8074-qmp-pcie-phy" for PCIe phy on IPQ8074
+	       "qcom,ipq8074-qmp-pcie-gen3-phy" for PCIe gen3 phy on IPQ8074
+	       "qcom,ipq9574-qmp-gen3x1-pcie-phy" for PCIe gen3 1 lane phy on IPQ9574
+	       "qcom,ipq9574-qmp-gen3x2-pcie-phy" for PCIe gen3 2 lane phy on IPQ9574
 	       "qcom,msm8996-qmp-pcie-phy" for 14nm PCIe phy on msm8996,
 	       "qcom,msm8996-qmp-usb3-phy" for 14nm USB3 phy on msm8996,
 	       "qcom,msm8998-qmp-usb3-phy" for USB3 QMP V3 phy on msm8998,
@@ -40,7 +45,10 @@ Required properties:
 		"com_aux" for phy common block aux clock,
 		"ref_aux" for phy reference aux clock,
 
-		For "qcom,ipq8074-qmp-pcie-phy": no clocks are listed.
+		For "qcom,ipq8074-qmp-pcie-phy" must contain:
+			"aux", "cfg_ahb".
+		For "qcom,ipq8074-qmp-pcie-gen3-phy" must contain:
+			"aux", "cfg_ahb".
 		For "qcom,msm8996-qmp-pcie-phy" must contain:
 			"aux", "cfg_ahb", "ref".
 		For "qcom,msm8996-qmp-usb3-phy" must contain:
@@ -66,6 +74,8 @@ Required properties:
 		"ufsphy" for the PHY reset in the UFS controller.
 
 		For "qcom,ipq8074-qmp-pcie-phy" must contain:
+			"phy", "common".
+		For "qcom,ipq8074-qmp-pcie-gen3-phy" must contain:
 			"phy", "common".
 		For "qcom,msm8996-qmp-pcie-phy" must contain:
 			"phy", "common", "cfg".

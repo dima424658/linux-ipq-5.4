@@ -14,6 +14,9 @@
 #include <linux/soc/qcom/smem_state.h>
 #include <linux/remoteproc.h>
 #include "qcom_q6v5.h"
+#include <linux/delay.h>
+
+#define STOP_ACK_TIMEOUT_MS 5000
 
 /**
  * qcom_q6v5_prepare() - reinitialize the qcom_q6v5 context before start
@@ -25,9 +28,13 @@ int qcom_q6v5_prepare(struct qcom_q6v5 *q6v5)
 {
 	reinit_completion(&q6v5->start_done);
 	reinit_completion(&q6v5->stop_done);
+	reinit_completion(&q6v5->spawn_done);
 
 	q6v5->running = true;
 	q6v5->handover_issued = false;
+	q6v5->start_ack = false;
+	q6v5->stop_ack = false;
+	q6v5->spawn_ack = false;
 
 	enable_irq(q6v5->handover_irq);
 
@@ -57,43 +64,57 @@ static irqreturn_t q6v5_wdog_interrupt(int irq, void *data)
 
 	/* Sometimes the stop triggers a watchdog rather than a stop-ack */
 	if (!q6v5->running) {
+		q6v5->stop_ack = true;
 		complete(&q6v5->stop_done);
 		return IRQ_HANDLED;
 	}
 
-	msg = qcom_smem_get(QCOM_SMEM_HOST_ANY, q6v5->crash_reason, &len);
+	msg = qcom_smem_get(q6v5->remote_id, q6v5->crash_reason, &len);
 	if (!IS_ERR(msg) && len > 0 && msg[0])
 		dev_err(q6v5->dev, "watchdog received: %s\n", msg);
 	else
 		dev_err(q6v5->dev, "watchdog without message\n");
 
+	/* Complete any pending waits for this rproc */
+	complete(&q6v5->spawn_done);
+	complete(&q6v5->start_done);
+	complete(&q6v5->stop_done);
 	rproc_report_crash(q6v5->rproc, RPROC_WATCHDOG);
 
 	return IRQ_HANDLED;
 }
 
-static irqreturn_t q6v5_fatal_interrupt(int irq, void *data)
+irqreturn_t q6v5_fatal_interrupt(int irq, void *data)
 {
 	struct qcom_q6v5 *q6v5 = data;
 	size_t len;
 	char *msg;
 
-	msg = qcom_smem_get(QCOM_SMEM_HOST_ANY, q6v5->crash_reason, &len);
+	msg = qcom_smem_get(q6v5->remote_id, q6v5->crash_reason, &len);
 	if (!IS_ERR(msg) && len > 0 && msg[0])
 		dev_err(q6v5->dev, "fatal error received: %s\n", msg);
 	else
 		dev_err(q6v5->dev, "fatal error without message\n");
 
 	q6v5->running = false;
+
+	/* Complete any pending waits for this rproc */
+	complete(&q6v5->spawn_done);
+	complete(&q6v5->start_done);
+	complete(&q6v5->stop_done);
+
 	rproc_report_crash(q6v5->rproc, RPROC_FATAL_ERROR);
 
 	return IRQ_HANDLED;
 }
 
-static irqreturn_t q6v5_ready_interrupt(int irq, void *data)
+irqreturn_t q6v5_ready_interrupt(int irq, void *data)
 {
 	struct qcom_q6v5 *q6v5 = data;
 
+	pr_info("Subsystem error monitoring/handling services are up\n");
+
+	q6v5->start_ack = true;
 	complete(&q6v5->start_done);
 
 	return IRQ_HANDLED;
@@ -113,10 +134,13 @@ int qcom_q6v5_wait_for_start(struct qcom_q6v5 *q6v5, int timeout)
 	int ret;
 
 	ret = wait_for_completion_timeout(&q6v5->start_done, timeout);
-	if (!ret)
-		disable_irq(q6v5->handover_irq);
 
-	return !ret ? -ETIMEDOUT : 0;
+	if (!ret) {
+		disable_irq(q6v5->handover_irq);
+		return -ETIMEDOUT;
+	} else {
+		return q6v5->start_ack ? 0 : -ERESTARTSYS;
+	}
 }
 EXPORT_SYMBOL_GPL(qcom_q6v5_wait_for_start);
 
@@ -132,10 +156,21 @@ static irqreturn_t q6v5_handover_interrupt(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static irqreturn_t q6v5_stop_interrupt(int irq, void *data)
+irqreturn_t q6v5_spawn_interrupt(int irq, void *data)
 {
 	struct qcom_q6v5 *q6v5 = data;
 
+	q6v5->spawn_ack = true;
+	complete(&q6v5->spawn_done);
+
+	return IRQ_HANDLED;
+}
+
+irqreturn_t q6v5_stop_interrupt(int irq, void *data)
+{
+	struct qcom_q6v5 *q6v5 = data;
+
+	q6v5->stop_ack = true;
 	complete(&q6v5->stop_done);
 
 	return IRQ_HANDLED;
@@ -152,17 +187,68 @@ int qcom_q6v5_request_stop(struct qcom_q6v5 *q6v5)
 	int ret;
 
 	q6v5->running = false;
+	q6v5->stop_ack = false;
 
 	qcom_smem_state_update_bits(q6v5->state,
-				    BIT(q6v5->stop_bit), BIT(q6v5->stop_bit));
+			BIT(q6v5->stop_bit), BIT(q6v5->stop_bit));
 
-	ret = wait_for_completion_timeout(&q6v5->stop_done, 5 * HZ);
+	ret = wait_for_completion_timeout(&q6v5->stop_done,
+						msecs_to_jiffies(10000));
 
 	qcom_smem_state_update_bits(q6v5->state, BIT(q6v5->stop_bit), 0);
 
-	return ret == 0 ? -ETIMEDOUT : 0;
+	if (!ret)
+		return -ETIMEDOUT;
+	else
+		return q6v5->stop_ack ? 0 : -ERESTARTSYS;
 }
 EXPORT_SYMBOL_GPL(qcom_q6v5_request_stop);
+
+/**
+ * qcom_q6v5_request_spawn() - request the remote processor to spawn
+ * @q6v5:      reference to qcom_q6v5 context
+ *
+ * Return: 0 on success, negative errno on failure
+ */
+int qcom_q6v5_request_spawn(struct qcom_q6v5 *q6v5)
+{
+	int ret;
+
+	q6v5->spawn_ack = false;
+	ret = qcom_smem_state_update_bits(q6v5->spawn_state,
+			BIT(q6v5->spawn_bit), BIT(q6v5->spawn_bit));
+
+	ret = wait_for_completion_timeout(&q6v5->spawn_done,
+						msecs_to_jiffies(10000));
+
+	qcom_smem_state_update_bits(q6v5->spawn_state,
+						BIT(q6v5->spawn_bit), 0);
+
+	if (!ret)
+		return -ETIMEDOUT;
+	else
+		return q6v5->spawn_ack ? 0 : -ERESTARTSYS;
+}
+EXPORT_SYMBOL_GPL(qcom_q6v5_request_spawn);
+
+/**
+ * qcom_q6v5_panic_handler() - stop remote processor on panic
+ * @q6v5:	reference to qcom_q6v5 context
+ *
+ */
+void qcom_q6v5_panic_handler(struct qcom_q6v5 *q6v5)
+{
+	q6v5->running = false;
+
+	smem_panic_handler();
+	qcom_smem_state_update_bits(q6v5->shutdown_state,
+			BIT(q6v5->shutdown_bit), BIT(q6v5->shutdown_bit));
+	qcom_log_smp2p_ob_cmd(q6v5->shutdown_bit, BIT(q6v5->shutdown_bit),
+			      BIT(q6v5->shutdown_bit));
+	pr_info("APSS Panic: Sent shutdown request to Q6\n");
+	mdelay(STOP_ACK_TIMEOUT_MS);
+}
+EXPORT_SYMBOL_GPL(qcom_q6v5_panic_handler);
 
 /**
  * qcom_q6v5_init() - initializer of the q6v5 common struct
@@ -175,7 +261,7 @@ EXPORT_SYMBOL_GPL(qcom_q6v5_request_stop);
  * Return: 0 on success, negative errno on failure
  */
 int qcom_q6v5_init(struct qcom_q6v5 *q6v5, struct platform_device *pdev,
-		   struct rproc *rproc, int crash_reason,
+		   struct rproc *rproc, int remote_id, int crash_reason,
 		   void (*handover)(struct qcom_q6v5 *q6v5))
 {
 	int ret;
@@ -184,9 +270,11 @@ int qcom_q6v5_init(struct qcom_q6v5 *q6v5, struct platform_device *pdev,
 	q6v5->dev = &pdev->dev;
 	q6v5->crash_reason = crash_reason;
 	q6v5->handover = handover;
+	q6v5->remote_id = remote_id;
 
 	init_completion(&q6v5->start_done);
 	init_completion(&q6v5->stop_done);
+	init_completion(&q6v5->spawn_done);
 
 	q6v5->wdog_irq = platform_get_irq_byname(pdev, "wdog");
 	if (q6v5->wdog_irq < 0)
@@ -258,6 +346,12 @@ int qcom_q6v5_init(struct qcom_q6v5 *q6v5, struct platform_device *pdev,
 	if (IS_ERR(q6v5->state)) {
 		dev_err(&pdev->dev, "failed to acquire stop state\n");
 		return PTR_ERR(q6v5->state);
+	}
+
+	q6v5->shutdown_state = qcom_smem_state_get(&pdev->dev, "shutdown", &q6v5->shutdown_bit);
+	if (IS_ERR(q6v5->shutdown_state)) {
+		dev_err(&pdev->dev, "failed to acquire shutdown state\n");
+		return PTR_ERR(q6v5->shutdown_state);
 	}
 
 	return 0;

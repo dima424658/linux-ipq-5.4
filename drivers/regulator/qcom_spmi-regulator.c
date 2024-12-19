@@ -151,6 +151,8 @@ enum spmi_regulator_subtype {
 	SPMI_REGULATOR_SUBTYPE_ULT_HF_CTL3	= 0x0f,
 	SPMI_REGULATOR_SUBTYPE_ULT_HF_CTL4	= 0x10,
 	SPMI_REGULATOR_SUBTYPE_HFS430		= 0x0a,
+	SPMI_REGULATOR_SUBTYPE_VMPWM_CTL	= 0x0a,
+	SPMI_REGULATOR_SUBTYPE_HT_P150		= 0x35,
 };
 
 enum spmi_common_regulator_registers {
@@ -275,6 +277,10 @@ enum spmi_common_control_register_index {
 #define SPMI_FTSMPS_STEP_CTRL_STEP_SHIFT	3
 #define SPMI_FTSMPS_STEP_CTRL_DELAY_MASK	0x07
 #define SPMI_FTSMPS_STEP_CTRL_DELAY_SHIFT	0
+
+#define SPMI_SMPS_VMPWM_VSET_UB_SHIFT		8
+#define SPMI_SMPS_VMPWM_VSET_UB_MASK		0xf00
+#define SPMI_SMPS_VMPWM_VSET_LB_MASK		0xff
 
 /* Clock rate in kHz of the FTSMPS regulator reference clock. */
 #define SPMI_FTSMPS_CLOCK_RATE		19200
@@ -468,8 +474,17 @@ static struct spmi_voltage_range ln_ldo_ranges[] = {
 };
 
 static struct spmi_voltage_range smps_ranges[] = {
+	SPMI_VOLTAGE_RANGE(2,  670000,  670000, 990000,  990000,  8000),
 	SPMI_VOLTAGE_RANGE(0,  375000,  375000, 1562500, 1562500, 12500),
 	SPMI_VOLTAGE_RANGE(1, 1550000, 1575000, 3125000, 3125000, 25000),
+};
+
+static struct spmi_voltage_range smps_vmpwm_ranges[] = {
+	SPMI_VOLTAGE_RANGE(0,  664000,  664000, 1104000, 1104000, 8000),
+};
+
+static struct spmi_voltage_range ldo_vmpwm_ranges[] = {
+	SPMI_VOLTAGE_RANGE(0,  1104000, 1104000, 3300000, 3300000, 8000),
 };
 
 static struct spmi_voltage_range ftsmps_ranges[] = {
@@ -521,6 +536,8 @@ static DEFINE_SPMI_SET_POINTS(nldo2);
 static DEFINE_SPMI_SET_POINTS(nldo3);
 static DEFINE_SPMI_SET_POINTS(ln_ldo);
 static DEFINE_SPMI_SET_POINTS(smps);
+static DEFINE_SPMI_SET_POINTS(smps_vmpwm);
+static DEFINE_SPMI_SET_POINTS(ldo_vmpwm);
 static DEFINE_SPMI_SET_POINTS(ftsmps);
 static DEFINE_SPMI_SET_POINTS(ftsmps2p5);
 static DEFINE_SPMI_SET_POINTS(ftsmps426);
@@ -705,6 +722,24 @@ spmi_regulator_find_range(struct spmi_regulator *vreg)
 			return range;
 
 	return NULL;
+}
+
+static const struct spmi_voltage_range *
+spmi_regulator_find_uV_range(struct spmi_regulator *vreg, int min, int max)
+{
+	const struct spmi_voltage_range *range, *end;
+
+	if (!vreg->set_points || !vreg->set_points->count)
+		return 0;
+
+	range = vreg->set_points->range;
+	end = range + vreg->set_points->count;
+
+	for (; range < end; range++)
+		if ((range->min_uV <= min) && (range->max_uV >= max))
+			return range;
+
+	return 0;
 }
 
 static int spmi_regulator_select_voltage_same_range(struct spmi_regulator *vreg,
@@ -926,6 +961,47 @@ static int spmi_regulator_ult_lo_smps_get_voltage(struct regulator_dev *rdev)
 		voltage_sel &= ~ULT_SMPS_RANGE_SPLIT;
 
 	return spmi_hw_selector_to_sw(vreg, voltage_sel, range);
+}
+
+static int spmi_regulator_smps_vmpwm_set_vol_uV(struct regulator_dev *rdev,
+				int min_uV, int max_uV, unsigned *selector)
+{
+	struct spmi_regulator *vreg = rdev_get_drvdata(rdev);
+	const struct spmi_voltage_range *range;
+	int req_vol;
+	u8 reg[2];
+
+	range = spmi_regulator_find_uV_range(vreg, min_uV, max_uV);
+	if (!range)
+		return -EINVAL;
+
+	*selector = spmi_regulator_select_voltage(vreg, min_uV, max_uV);
+	req_vol = range->set_point_min_uV + (range->step_uV * (*selector));
+
+	/* Convert uV to mV as the register supports mV */
+	req_vol = req_vol/1000;
+
+	/*
+	 * Voltage set point bits<7:0>. 2-Byte Word (lower byte word)
+	 */
+	reg[0] = req_vol & SPMI_SMPS_VMPWM_VSET_LB_MASK;
+	/*
+	 * Voltage set point bit <11:8>. 2-Byte Word (upper byte word)
+	 */
+	reg[1] = (req_vol & SPMI_SMPS_VMPWM_VSET_UB_MASK)
+			>> SPMI_SMPS_VMPWM_VSET_UB_SHIFT;
+
+	return spmi_vreg_write(vreg, SPMI_COMMON_REG_VOLTAGE_RANGE, reg, 2);
+}
+
+static int spmi_regulator_smps_vmpwm_get_vol_uV(struct regulator_dev *rdev)
+{
+	struct spmi_regulator *vreg = rdev_get_drvdata(rdev);
+	u8 reg[2];
+
+	spmi_vreg_read(vreg, SPMI_COMMON_REG_VOLTAGE_RANGE, reg, 2);
+
+	return ((reg[1] << SPMI_SMPS_VMPWM_VSET_UB_SHIFT) | reg[0]) * 1000;
 }
 
 static int spmi_regulator_common_list_voltage(struct regulator_dev *rdev,
@@ -1276,6 +1352,18 @@ static struct regulator_ops spmi_smps_ops = {
 	.set_pull_down		= spmi_regulator_common_set_pull_down,
 };
 
+static struct regulator_ops spmi_smps_vmpwm_ops = {
+	.enable			= regulator_enable_regmap,
+	.disable		= regulator_disable_regmap,
+	.is_enabled		= regulator_is_enabled_regmap,
+	.set_voltage		= spmi_regulator_smps_vmpwm_set_vol_uV,
+	.get_voltage		= spmi_regulator_smps_vmpwm_get_vol_uV,
+	.map_voltage		= spmi_regulator_common_map_voltage,
+	.list_voltage		= spmi_regulator_common_list_voltage,
+	.set_mode		= spmi_regulator_common_set_mode,
+	.get_mode		= spmi_regulator_common_get_mode,
+};
+
 static struct regulator_ops spmi_ldo_ops = {
 	.enable			= regulator_enable_regmap,
 	.disable		= regulator_disable_regmap,
@@ -1421,6 +1509,8 @@ static struct regulator_ops spmi_hfs430_ops = {
 
 static const struct spmi_regulator_mapping supported_regulators[] = {
 	/*           type subtype dig_min dig_max ltype ops setpoints hpm_min */
+	SPMI_VREG(LDO,  HT_P150, 0, INF, LDO, smps_vmpwm, ldo_vmpwm, 0),
+	SPMI_VREG(BUCK,  VMPWM_CTL, 0, INF, SMPS, smps_vmpwm, smps_vmpwm, 0),
 	SPMI_VREG(BUCK,  GP_CTL,   0, INF, SMPS,   smps,   smps,   100000),
 	SPMI_VREG(BUCK,  HFS430,   0, INF, HFS430, hfs430, hfs430,  10000),
 	SPMI_VREG(LDO,   N300,     0, INF, LDO,    ldo,    nldo1,   10000),
@@ -1552,6 +1642,13 @@ static int spmi_regulator_init_slew_rate(struct spmi_regulator *vreg)
 	u8 reg = 0;
 	int step, delay, slew_rate, step_delay;
 	const struct spmi_voltage_range *range;
+
+	/*
+	 * Slew rate need not be initialized if
+	 * set_voltage_time_sel in the ops is not defined.
+	 */
+	if (!vreg->desc.ops->set_voltage_time_sel)
+		return 0;
 
 	ret = spmi_vreg_read(vreg, SPMI_COMMON_REG_STEP_CTRL, &reg, 1);
 	if (ret) {
@@ -1940,6 +2037,13 @@ static const struct spmi_regulator_data pms405_regulators[] = {
 	{ }
 };
 
+static const struct spmi_regulator_data pmd9655_regulators[] = {
+	{ "s3", 0x1a00, "vdd_s3",},
+	{ "s4", 0x1d00, "vdd_s4",},
+	{ "ldo11", 0x4a00, "vdd_ldo11",},
+	{ }
+};
+
 static const struct of_device_id qcom_spmi_regulator_match[] = {
 	{ .compatible = "qcom,pm8005-regulators", .data = &pm8005_regulators },
 	{ .compatible = "qcom,pm8841-regulators", .data = &pm8841_regulators },
@@ -1948,6 +2052,7 @@ static const struct of_device_id qcom_spmi_regulator_match[] = {
 	{ .compatible = "qcom,pm8994-regulators", .data = &pm8994_regulators },
 	{ .compatible = "qcom,pmi8994-regulators", .data = &pmi8994_regulators },
 	{ .compatible = "qcom,pms405-regulators", .data = &pms405_regulators },
+	{ .compatible = "qcom,pmd9655-regulators", .data = &pmd9655_regulators },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, qcom_spmi_regulator_match);

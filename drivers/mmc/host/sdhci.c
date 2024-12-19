@@ -249,6 +249,8 @@ static void sdhci_do_reset(struct sdhci_host *host, u8 mask)
 		/* Resetting the controller clears many */
 		host->preset_enabled = false;
 	}
+	if (host->is_crypto_en)
+		host->crypto_reset_reqd = true;
 }
 
 static void sdhci_set_default_irqs(struct sdhci_host *host)
@@ -1821,6 +1823,30 @@ void sdhci_set_power(struct sdhci_host *host, unsigned char mode,
 }
 EXPORT_SYMBOL_GPL(sdhci_set_power);
 
+static int sdhci_crypto_cfg(struct sdhci_host *host, struct mmc_request *mrq,
+					u32 slot)
+{
+	int err = 0;
+
+	if (host->crypto_reset_reqd && host->ops->crypto_engine_reset) {
+		err = host->ops->crypto_engine_reset(host);
+		if (err) {
+			pr_err("%s: crypto reset failed\n",
+					mmc_hostname(host->mmc));
+			return err;
+		}
+		host->crypto_reset_reqd = false;
+	}
+	if (host->ops->crypto_engine_cfg) {
+		err = host->ops->crypto_engine_cfg(host, mrq, slot);
+		if (err) {
+			pr_err("%s: failed to configure crypto\n",
+					mmc_hostname(host->mmc));
+		}
+	}
+	return err;
+}
+
 /*****************************************************************************\
  *                                                                           *
  * MMC callbacks                                                             *
@@ -1857,6 +1883,13 @@ void sdhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		mrq->cmd->error = -ENOMEDIUM;
 		sdhci_finish_mrq(host, mrq);
 	} else {
+		if (host->is_crypto_en) {
+			spin_unlock_irqrestore(&host->lock, flags);
+			if (sdhci_crypto_cfg(host, mrq, 0))
+				goto end_req;
+			spin_lock_irqsave(&host->lock, flags);
+		}
+
 		if (mrq->sbc && !(host->flags & SDHCI_AUTO_CMD23))
 			sdhci_send_command(host, mrq->sbc);
 		else
@@ -1864,6 +1897,14 @@ void sdhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	}
 
 	spin_unlock_irqrestore(&host->lock, flags);
+	return;
+
+end_req:
+	mrq->cmd->error = -EIO;
+	if (mrq->data)
+		mrq->data->error = -EIO;
+	sdhci_dumpregs(host);
+	mmc_request_done(host->mmc, mrq);
 }
 EXPORT_SYMBOL_GPL(sdhci_request);
 

@@ -145,6 +145,7 @@
 #include <net/devlink.h>
 
 #include "net-sysfs.h"
+#include "skbuff_debug.h"
 
 #define MAX_GRO_SKBS 8
 
@@ -156,6 +157,7 @@ static DEFINE_SPINLOCK(offload_lock);
 struct list_head ptype_base[PTYPE_HASH_SIZE] __read_mostly;
 struct list_head ptype_all __read_mostly;	/* Taps */
 static struct list_head offload_base __read_mostly;
+static struct workqueue_struct *napi_workq __read_mostly;
 
 static int netif_rx_internal(struct sk_buff *skb);
 static int call_netdevice_notifiers_info(unsigned long val,
@@ -283,7 +285,6 @@ EXPORT_PER_CPU_SYMBOL(softnet_data);
  *
  *******************************************************************************/
 
-
 /*
  *	Add a protocol ID to the list. Now that the input handler is
  *	smarter we can dispense with all the messy stuff that used to be
@@ -384,7 +385,6 @@ void dev_remove_pack(struct packet_type *pt)
 	synchronize_net();
 }
 EXPORT_SYMBOL(dev_remove_pack);
-
 
 /**
  *	dev_add_offload - register offload handlers
@@ -527,7 +527,6 @@ int netdev_boot_setup_check(struct net_device *dev)
 	return 0;
 }
 EXPORT_SYMBOL(netdev_boot_setup_check);
-
 
 /**
  * netdev_boot_base	- get address from boot time settings
@@ -761,7 +760,6 @@ struct net_device *dev_get_by_index_rcu(struct net *net, int ifindex)
 	return NULL;
 }
 EXPORT_SYMBOL(dev_get_by_index_rcu);
-
 
 /**
  *	dev_get_by_index - find a device by its ifindex
@@ -1457,7 +1455,6 @@ void dev_close(struct net_device *dev)
 }
 EXPORT_SYMBOL(dev_close);
 
-
 /**
  *	dev_disable_lro - disable Large Receive Offload on a device
  *	@dev: device
@@ -1514,7 +1511,7 @@ const char *netdev_cmd_to_name(enum netdev_cmd cmd)
 	N(UDP_TUNNEL_DROP_INFO) N(CHANGE_TX_QUEUE_LEN)
 	N(CVLAN_FILTER_PUSH_INFO) N(CVLAN_FILTER_DROP_INFO)
 	N(SVLAN_FILTER_PUSH_INFO) N(SVLAN_FILTER_DROP_INFO)
-	N(PRE_CHANGEADDR)
+	N(PRE_CHANGEADDR) N(BR_JOIN) N(BR_LEAVE)
 	}
 #undef N
 	return "UNKNOWN_NETDEV_EVENT";
@@ -1711,6 +1708,9 @@ static int call_netdevice_notifiers_mtu(unsigned long val,
 
 	return call_netdevice_notifiers_info(val, &info.info);
 }
+
+bool fast_tc_filter = false;
+EXPORT_SYMBOL_GPL(fast_tc_filter);
 
 #ifdef CONFIG_NET_INGRESS
 static DEFINE_STATIC_KEY_FALSE(ingress_needed_key);
@@ -2744,7 +2744,6 @@ void __dev_kfree_skb_any(struct sk_buff *skb, enum skb_free_reason reason)
 }
 EXPORT_SYMBOL(__dev_kfree_skb_any);
 
-
 /**
  * netif_device_detach - mark device as removed
  * @dev: network device
@@ -2974,7 +2973,6 @@ struct sk_buff *skb_mac_gso_segment(struct sk_buff *skb,
 }
 EXPORT_SYMBOL(skb_mac_gso_segment);
 
-
 /* openvswitch calls this on rx path, so we need a different check.
  */
 static inline bool skb_needs_check(struct sk_buff *skb, bool tx_path)
@@ -3194,19 +3192,288 @@ netdev_features_t netif_skb_features(struct sk_buff *skb)
 }
 EXPORT_SYMBOL(netif_skb_features);
 
+/**
+ *	netdev_sawf_deinit - free sawf statistics.
+ *	@dev: Device to free sawf statistics.
+ *
+ *	Returns true on success, false on failure.
+ */
+bool netdev_sawf_deinit(struct net_device *dev)
+{
+	struct pcpu_sawf_stats __percpu *stats_to_delete;
+
+	if ((!dev->sawf_stats)) {
+		return false;
+	}
+
+	stats_to_delete = dev->sawf_stats;
+	dev->sawf_stats = NULL;
+
+	free_percpu(stats_to_delete);
+
+	return true;
+}
+EXPORT_SYMBOL(netdev_sawf_deinit);
+
+/**
+ *	netdev_sawf_init - Allocate netdev SAWF statistics.
+ *	@dev:  Device to allocate statistics on.
+ *	@mode: Initial flags to be set.
+ */
+bool netdev_sawf_init(struct net_device *dev, uint16_t mode)
+{
+	int cpu;
+
+	if (dev->sawf_stats) {
+		return false;
+	}
+
+	dev->sawf_stats = netdev_alloc_pcpu_stats(struct pcpu_sawf_stats);
+	if (!dev->sawf_stats) {
+		return false;
+	}
+
+	for_each_possible_cpu(cpu) {
+		struct pcpu_sawf_stats *stats = per_cpu_ptr(dev->sawf_stats, cpu);
+		memset(stats, 0, sizeof(*stats));
+	}
+
+	dev->sawf_flags = mode;
+
+	return true;
+}
+EXPORT_SYMBOL(netdev_sawf_init);
+
+/**
+ *	netdev_sawf_flags_update - Set SAWF flags.
+ *	@dev: Device to update
+ *	@flags: New value of flags
+ */
+bool netdev_sawf_flags_update(struct net_device *dev, uint16_t flags)
+{
+	if (!dev->sawf_stats) {
+		return false;
+	}
+
+	dev->sawf_flags = flags;
+
+	return true;
+}
+EXPORT_SYMBOL(netdev_sawf_flags_update);
+
+/**
+ *	netdev_sawf_enable - Re-enable SAWF statistics.
+ *	@dev: Device to enable.
+ */
+bool netdev_sawf_enable(struct net_device *dev)
+{
+	int cpu;
+	if (!dev->sawf_stats) {
+		return false;
+	}
+
+	for_each_possible_cpu(cpu) {
+		struct pcpu_sawf_stats *stats = per_cpu_ptr(dev->sawf_stats, cpu);
+		memset(stats, 0, sizeof(*stats));
+	}
+
+	dev->sawf_flags |= NETDEV_SAWF_FLAG_ENABLED;
+
+	return true;
+}
+EXPORT_SYMBOL(netdev_sawf_enable);
+
+/**
+ *	netdev_sawf_disable - Disable SAWF statistics collection.
+ *	@dev: device to disable statistics.
+ */
+bool netdev_sawf_disable(struct net_device *dev)
+{
+	if (!dev->sawf_stats) {
+		return false;
+	}
+
+	dev->sawf_flags &= ~NETDEV_SAWF_FLAG_ENABLED;
+
+	return true;
+}
+EXPORT_SYMBOL(netdev_sawf_disable);
+
+/**
+ *	netdev_sawf_debug_set - Sets the debug service class.
+ *	@dev: Device to configure
+ *	@sid: Service class ID to keep debug information.
+ */
+bool netdev_sawf_debug_set(struct net_device *dev, uint8_t sid)
+{
+	int cpu;
+
+	if (!dev->sawf_stats) {
+		return false;
+	}
+
+	for_each_possible_cpu(cpu) {
+		struct pcpu_sawf_stats *stats = per_cpu_ptr(dev->sawf_stats, cpu);
+		stats->debug_lat_max = 0;
+		stats->debug_lat_min = 0;
+		stats->debug_lat_ewma = 0;
+		stats->debug_lat_last = 0;
+	}
+
+	dev->sawf_flags = (dev->sawf_flags & ~(NETDEV_SAWF_FLAG_DEBUG_MASK)) | (sid << NETDEV_SAWF_FLAG_DEBUG_SHIFT) | (NETDEV_SAWF_FLAG_DEBUG);
+
+	return true;
+}
+EXPORT_SYMBOL(netdev_sawf_debug_set);
+
+/**
+ *	netdev_sawf_debug_set - Clears the debug service class.
+ *	@dev: Device to configure
+ */
+bool netdev_sawf_debug_unset(struct net_device *dev)
+{
+	if (!dev->sawf_stats) {
+		return false;
+	}
+
+	dev->sawf_flags &= ~NETDEV_SAWF_FLAG_DEBUG;
+
+	return true;
+}
+EXPORT_SYMBOL(netdev_sawf_debug_unset);
+
+/**
+ *	netdev_sawf_debug_get - Gets the debug SAWF information.
+ *	@dev:  Device to read debug information
+ *	@sid:  Pointer where service class id is written
+ *	@max:  Pointer where max latency is written
+ *	@min:  Pointer where min latency is written
+ *	@avg:  Pointer where average (exponential moving average) is written
+ *	@last: Pointer where last latency value is written.
+ */
+bool netdev_sawf_debug_get(struct net_device *dev, uint8_t *sid, uint32_t *max, uint32_t *min, uint32_t *avg, uint32_t *last)
+{
+	uint32_t cpu, avg_sum = 0, avg_count = 0;
+
+	if (!dev->sawf_stats || !(dev->sawf_flags & NETDEV_SAWF_FLAG_DEBUG)) {
+		return false;
+	}
+
+	/*
+	 * Initialize minimum to max value of uint32 so any valid value is less than it.
+	 * Initialize maximum to 0 so any valid value is greater than it.
+	 */
+	*min = 0xFFFFFFFF;
+	*max = 0;
+
+	*sid = dev->sawf_flags >> NETDEV_SAWF_FLAG_DEBUG_SHIFT;
+	for_each_possible_cpu(cpu) {
+		struct pcpu_sawf_stats *sawf_stats = per_cpu_ptr(dev->sawf_stats, cpu);
+
+		if (*min > sawf_stats->debug_lat_min && sawf_stats->debug_lat_min != 0) {
+			*min = sawf_stats->debug_lat_min;
+		}
+
+		if (*max < sawf_stats->debug_lat_max) {
+			*max = sawf_stats->debug_lat_max;
+		}
+
+		if (sawf_stats->debug_lat_last) {
+			*last = sawf_stats->debug_lat_last;
+		}
+
+		if (sawf_stats->debug_lat_ewma) {
+			avg_sum += sawf_stats->debug_lat_ewma;
+			avg_count++;
+		}
+	}
+
+	if (avg_count) {
+		*avg = avg_sum / avg_count;
+	}
+
+	/*
+	 * If minimum hasn't been updated, set it to 0.
+	 */
+	if (*min == 0xFFFFFFFF) {
+		*min = 0;
+	}
+
+	return true;
+}
+EXPORT_SYMBOL(netdev_sawf_debug_get);
+
+/**
+ *	netdev_sawf_debug_get - Gets latency statistics for a service class.
+ *	@dev:  Device to read latency statistics
+ *	@sid:  Service class ID to get
+ *	@hist: Pointer to array where histogram data is written.
+ *	@avg:  Pointer where mean latency is written.
+ */
+bool netdev_sawf_lat_get(struct net_device *dev, uint8_t sid, uint64_t *hist, uint64_t *avg)
+{
+	uint32_t bucket = 0, cpu = 0;
+	uint64_t total_lat = 0, total_packets = 0;
+
+	if (!dev->sawf_stats) {
+		return false;
+	}
+
+	if (!(dev->sawf_flags & NETDEV_SAWF_FLAG_ENABLED)) {
+		return false;
+	}
+
+	for (bucket = 0; bucket < NETDEV_SAWF_DELAY_BUCKETS; bucket++) {
+		hist[bucket] = 0;
+	}
+
+	for_each_possible_cpu(cpu) {
+		unsigned int start;
+		struct pcpu_sawf_stats *sawf_stats = per_cpu_ptr(dev->sawf_stats, cpu);
+		do {
+			start = u64_stats_fetch_begin(&sawf_stats->syncp);
+			for (bucket = 0; bucket < NETDEV_SAWF_DELAY_BUCKETS; bucket++) {
+				hist[bucket] += sawf_stats->delay[sid][bucket];
+			}
+
+			total_packets += sawf_stats->tx_packets[sid];
+			total_lat += sawf_stats->total_delay[sid];
+		} while (u64_stats_fetch_retry(&sawf_stats->syncp, start));
+	}
+
+	*avg = div64_u64(total_lat, total_packets);
+	return true;
+}
+EXPORT_SYMBOL(netdev_sawf_lat_get);
+
 static int xmit_one(struct sk_buff *skb, struct net_device *dev,
 		    struct netdev_queue *txq, bool more)
 {
 	unsigned int len;
 	int rc;
 
-	if (dev_nit_active(dev))
-		dev_queue_xmit_nit(skb, dev);
+	/* If this skb has been fast forwarded then we don't want it to
+	 * go to any taps (by definition we're trying to bypass them).
+	 */
+	if (unlikely(!skb->fast_forwarded)) {
+		if (dev_nit_active(dev))
+			dev_queue_xmit_nit(skb, dev);
+	}
 
-	len = skb->len;
-	trace_net_dev_start_xmit(skb, dev);
-	rc = netdev_start_xmit(skb, dev, txq, more);
-	trace_net_dev_xmit(skb, rc, dev, len);
+#ifdef CONFIG_ETHERNET_PACKET_MANGLE
+	if (!dev->eth_mangle_tx ||
+	    (skb = dev->eth_mangle_tx(dev, skb)) != NULL)
+#else
+	if (1)
+#endif
+	{
+		len = skb->len;
+		trace_net_dev_start_xmit(skb, dev);
+		rc = netdev_start_xmit(skb, dev, txq, more);
+		trace_net_dev_xmit(skb, rc, dev, len);
+	} else {
+		rc = NETDEV_TX_OK;
+	}
 
 	return rc;
 }
@@ -3219,7 +3486,6 @@ struct sk_buff *dev_hard_start_xmit(struct sk_buff *first, struct net_device *de
 
 	while (skb) {
 		struct sk_buff *next = skb->next;
-
 		skb_mark_not_on_list(skb);
 		rc = xmit_one(skb, dev, txq, next != NULL);
 		if (unlikely(!dev_xmit_complete(rc))) {
@@ -3381,6 +3647,60 @@ static void qdisc_pkt_len_init(struct sk_buff *skb)
 
 		qdisc_skb_cb(skb)->pkt_len += (gso_segs - 1) * hdr_len;
 	}
+}
+
+static inline int __dev_xmit_skb_qdisc(struct sk_buff *skb, struct Qdisc *q,
+				 struct net_device *top_qdisc_dev,
+				 struct netdev_queue *top_txq)
+{
+	spinlock_t *root_lock = qdisc_lock(q);
+	struct sk_buff *to_free = NULL;
+	bool contended;
+	int rc;
+
+	qdisc_calculate_pkt_len(skb, q);
+
+	if (q->flags & TCQ_F_NOLOCK) {
+		rc = q->enqueue(skb, q, &to_free) & NET_XMIT_MASK;
+		if (likely(!netif_xmit_frozen_or_stopped(top_txq)))
+			qdisc_run(q);
+
+		if (unlikely(to_free))
+			kfree_skb_list(to_free);
+		return rc;
+	}
+
+	/*
+	 * Heuristic to force contended enqueues to serialize on a
+	 * separate lock before trying to get qdisc main lock.
+	 * This permits qdisc->running owner to get the lock more
+	 * often and dequeue packets faster.
+	 */
+	contended = qdisc_is_running(q);
+	if (unlikely(contended))
+		spin_lock(&q->busylock);
+
+	spin_lock(root_lock);
+	if (unlikely(test_bit(__QDISC_STATE_DEACTIVATED, &q->state))) {
+		__qdisc_drop(skb, &to_free);
+		rc = NET_XMIT_DROP;
+	} else {
+		rc = q->enqueue(skb, q, &to_free) & NET_XMIT_MASK;
+		if (qdisc_run_begin(q)) {
+			if (unlikely(contended)) {
+				spin_unlock(&q->busylock);
+				contended = false;
+			}
+			__qdisc_run(q);
+			qdisc_run_end(q);
+		}
+	}
+	spin_unlock(root_lock);
+	if (unlikely(to_free))
+		kfree_skb_list(to_free);
+	if (unlikely(contended))
+		spin_unlock(&q->busylock);
+	return rc;
 }
 
 static inline int __dev_xmit_skb(struct sk_buff *skb, struct Qdisc *q,
@@ -3682,6 +4002,212 @@ struct netdev_queue *netdev_core_pick_tx(struct net_device *dev,
 }
 
 /**
+ *	dev_fast_xmit_vp - fast xmit the skb to a PPE virtual port
+ *	@skb:buffer to transmit
+ *	@dev: the device to be transmited to
+ *	sucessful return true
+ *	failed return false
+ */
+bool dev_fast_xmit_vp(struct sk_buff *skb,
+		struct net_device *dev)
+{
+	struct netdev_queue *txq;
+	int cpu;
+	netdev_tx_t rc;
+
+	if (unlikely(!(dev->flags & IFF_UP))) {
+		return false;
+	}
+
+	if (unlikely(skb_is_nonlinear(skb))) {
+		return false;
+	}
+
+	rcu_read_lock_bh();
+	cpu = smp_processor_id();
+
+	/*
+	 * TODO: Skip this altogether and eventually move this call to ppe_vp
+	 * this would avoid multiple function calls when giving packet to wifi VAP.
+	 */
+	txq = netdev_core_pick_tx(dev, skb, NULL);
+
+	if (likely(txq->xmit_lock_owner != cpu)) {
+#define FAST_VP_HARD_TX_LOCK(txq, cpu) {	\
+		__netif_tx_lock(txq, cpu);		\
+}
+
+#define FAST_VP_HARD_TX_UNLOCK(txq) {		\
+		__netif_tx_unlock(txq);			\
+}
+		skb->fast_xmit = 1;
+		FAST_VP_HARD_TX_LOCK(txq, cpu);
+		if (likely(!netif_xmit_stopped(txq))) {
+			rc = netdev_start_xmit(skb, dev, txq, 0);
+			if (unlikely(!dev_xmit_complete(rc))) {
+				FAST_VP_HARD_TX_UNLOCK(txq);
+				goto q_xmit;
+			}
+			FAST_VP_HARD_TX_UNLOCK(txq);
+			rcu_read_unlock_bh();
+			return true;
+		}
+		FAST_VP_HARD_TX_UNLOCK(txq);
+	}
+q_xmit:
+	skb->fast_xmit = 0;
+	rcu_read_unlock_bh();
+	return false;
+}
+EXPORT_SYMBOL(dev_fast_xmit_vp);
+
+/**
+ *	dev_fast_xmit_qdisc - fast xmit the skb along with qdisc processing
+ *	@skb:buffer to transmit
+ *	@top_qdisc_dev: the top device on which qdisc is enabled.
+ *	@bottom_dev: the device on which transmission should happen after qdisc processing.
+ *	sucessful return true
+ *	failed return false
+ */
+bool dev_fast_xmit_qdisc(struct sk_buff *skb, struct net_device *top_qdisc_dev, struct net_device *bottom_dev)
+{
+        struct netdev_queue *txq;
+	struct Qdisc *q;
+	int rc = -ENOMEM;
+
+	if (unlikely(!(top_qdisc_dev->flags & IFF_UP))) {
+		return false;
+	}
+
+	skb_reset_mac_header(skb);
+
+	/* Disable soft irqs for various locks below. Also
+	 * stops preemption for RCU.
+	 */
+	rcu_read_lock_bh();
+
+	txq = netdev_core_pick_tx(top_qdisc_dev, skb, NULL);
+	q = rcu_dereference_bh(txq->qdisc);
+	if (unlikely(!q->enqueue)) {
+		rcu_read_unlock_bh();
+		return false;
+	}
+
+	skb_update_prio(skb);
+
+	qdisc_pkt_len_init(skb);
+#ifdef CONFIG_NET_CLS_ACT
+	skb->tc_at_ingress = 0;
+#ifdef CONFIG_NET_EGRESS
+	if (static_branch_unlikely(&egress_needed_key)) {
+		skb = sch_handle_egress(skb, &rc, top_qdisc_dev);
+		if (!skb) {
+			rcu_read_unlock_bh();
+			return true;
+		}
+	}
+#endif
+#endif
+	/* If device/qdisc don't need skb->dst, release it right now while
+	 * its hot in this cpu cache.
+	 * TODO: do we need this ?
+	 */
+	if (top_qdisc_dev->priv_flags & IFF_XMIT_DST_RELEASE)
+		skb_dst_drop(skb);
+	else
+		skb_dst_force(skb);
+
+	trace_net_dev_queue(skb);
+
+	/* Update the dev so that we can transmit to bottom device after qdisc */
+	skb->dev = bottom_dev;
+	skb->fast_qdisc = 1;
+	rc = __dev_xmit_skb_qdisc(skb, q, top_qdisc_dev, txq);
+
+	rcu_read_unlock_bh();
+	return true;
+}
+EXPORT_SYMBOL(dev_fast_xmit_qdisc);
+
+/**
+ *	dev_fast_xmit - fast xmit the skb
+ *	@skb:buffer to transmit
+ *	@dev: the device to be transmited to
+ *	@features: the skb features could bed used
+ *	sucessful return true
+ *	failed return false
+ */
+bool dev_fast_xmit(struct sk_buff *skb,
+		struct net_device *dev,
+		netdev_features_t features)
+{
+	struct netdev_queue *txq;
+	int cpu;
+	netdev_tx_t rc;
+
+	/* the fast_xmit flag will avoid multiple checks in wifi xmit path */
+	if (likely(!skb_is_nonlinear(skb)))
+		skb->fast_xmit = 1;
+
+	if (unlikely(!(dev->flags & IFF_UP))) {
+		return false;
+	}
+
+	if (unlikely(skb_needs_linearize(skb, features))) {
+		return false;
+	}
+
+	rcu_read_lock_bh();
+	cpu = smp_processor_id();
+
+	/* If device don't need the dst, release it now, otherwise make sure
+	 * the refcount increased.
+	 */
+	if (likely(dev->priv_flags & IFF_XMIT_DST_RELEASE)) {
+		skb_dst_drop(skb);
+	} else {
+		skb_dst_force(skb);
+	}
+
+	txq = netdev_core_pick_tx(dev, skb, NULL);
+
+	if (likely(txq->xmit_lock_owner != cpu)) {
+#define FAST_HARD_TX_LOCK(features, txq, cpu) {		\
+	if ((features & NETIF_F_LLTX) == 0) {		\
+		__netif_tx_lock(txq, cpu);		\
+	} else {					\
+		__netif_tx_acquire(txq);		\
+	}						\
+}
+
+#define FAST_HARD_TX_UNLOCK(features, txq) {		\
+	if ((features & NETIF_F_LLTX) == 0) {		\
+		__netif_tx_unlock(txq);			\
+	} else {					\
+		__netif_tx_release(txq);		\
+	}						\
+}
+		netdev_features_t dev_features = dev->features;
+		FAST_HARD_TX_LOCK(dev_features, txq, cpu);
+		if (likely(!netif_xmit_stopped(txq))) {
+			rc = netdev_start_xmit(skb, dev, txq, 0);
+			if (unlikely(!dev_xmit_complete(rc))) {
+				FAST_HARD_TX_UNLOCK(dev_features, txq);
+				goto fail;
+			}
+			FAST_HARD_TX_UNLOCK(dev_features, txq);
+			rcu_read_unlock_bh();
+			return true;
+		}
+		FAST_HARD_TX_UNLOCK(dev_features, txq);
+	}
+fail:
+	rcu_read_unlock_bh();
+	return false;
+}
+EXPORT_SYMBOL(dev_fast_xmit);
+
+/**
  *	__dev_queue_xmit - transmit a buffer
  *	@skb: buffer to transmit
  *	@sb_dev: suboordinate device used for L2 forwarding offload
@@ -3717,6 +4243,12 @@ static int __dev_queue_xmit(struct sk_buff *skb, struct net_device *sb_dev)
 
 	skb_reset_mac_header(skb);
 	skb_assert_len(skb);
+
+	/*
+	 * if the skb landed in dev_queue_xmit then its not fast transmitted
+	 * reset this flag for further processing.
+	 */
+	skb->fast_xmit = 0;
 
 	if (unlikely(skb_shinfo(skb)->tx_flags & SKBTX_SCHED_TSTAMP))
 		__skb_tstamp_tx(skb, NULL, skb->sk, SCM_TSTAMP_SCHED);
@@ -3988,8 +4520,20 @@ static int get_rps_cpu(struct net_device *dev, struct sk_buff *skb,
 
 	flow_table = rcu_dereference(rxqueue->rps_flow_table);
 	map = rcu_dereference(rxqueue->rps_map);
-	if (!flow_table && !map)
-		goto done;
+	if (!flow_table) {
+		if (!map) {
+			goto done;
+		}
+
+		/* Skip hash calculation & lookup if we have only one CPU to transmit and RFS is disabled */
+		if (map->len == 1) {
+			tcpu = map->cpus[0];
+			if (cpu_online(tcpu)) {
+				cpu = tcpu;
+				goto done;
+			}
+		}
+	}
 
 	skb_reset_network_header(skb);
 	hash = skb_get_hash(skb);
@@ -4414,11 +4958,23 @@ out_redir:
 }
 EXPORT_SYMBOL_GPL(do_xdp_generic);
 
+static inline void netif_sawf_timestamp(struct sk_buff *skb, struct net_device *dev)
+{
+	if (!(dev->sawf_flags & NETDEV_SAWF_FLAG_RX_LAT)) {
+		__net_timestamp(skb);
+	}
+}
+
 static int netif_rx_internal(struct sk_buff *skb)
 {
 	int ret;
+	struct net_device *dev = skb->dev;
 
-	net_timestamp_check(READ_ONCE(netdev_tstamp_prequeue), skb);
+	if (dev->sawf_flags & NETDEV_SAWF_FLAG_ENABLED) {
+		netif_sawf_timestamp(skb, dev);
+	} else {
+		net_timestamp_check(READ_ONCE(netdev_tstamp_prequeue), skb);
+	}
 
 	trace_netif_rx(skb);
 
@@ -4710,6 +5266,9 @@ void netdev_rx_handler_unregister(struct net_device *dev)
 }
 EXPORT_SYMBOL_GPL(netdev_rx_handler_unregister);
 
+int (*athrs_fast_nat_recv)(struct sk_buff *skb) __rcu __read_mostly;
+EXPORT_SYMBOL_GPL(athrs_fast_nat_recv);
+
 /*
  * Limit the use of PFMEMALLOC reserves to those protocols that implement
  * the special handling of PFMEMALLOC skbs.
@@ -4759,6 +5318,7 @@ static int __netif_receive_skb_core(struct sk_buff **pskb, bool pfmemalloc,
 	bool deliver_exact = false;
 	int ret = NET_RX_DROP;
 	__be16 type;
+	int (*fast_recv)(struct sk_buff *skb);
 
 	net_timestamp_check(!READ_ONCE(netdev_tstamp_prequeue), skb);
 
@@ -4790,6 +5350,16 @@ another_round:
 			goto out;
 		}
 		skb_reset_mac_len(skb);
+	}
+
+	if (likely(!fast_tc_filter)) {
+		fast_recv = rcu_dereference(athrs_fast_nat_recv);
+		if (fast_recv) {
+			if (fast_recv(skb)) {
+				ret = NET_RX_SUCCESS;
+				goto out;
+			}
+		}
 	}
 
 	if (skb->protocol == cpu_to_be16(ETH_P_8021Q) ||
@@ -4830,6 +5400,7 @@ skip_taps:
 #endif
 	skb_reset_redirect(skb);
 skip_classify:
+
 	if (pfmemalloc && !skb_pfmemalloc_protocol(skb))
 		goto drop;
 
@@ -4843,6 +5414,24 @@ skip_classify:
 		else if (unlikely(!skb))
 			goto out;
 	}
+
+	if (unlikely(!fast_tc_filter)) {
+		goto skip_fast_recv;
+	}
+
+	fast_recv = rcu_dereference(athrs_fast_nat_recv);
+	if (fast_recv) {
+		if (pt_prev) {
+			ret = deliver_skb(skb, pt_prev, orig_dev);
+			pt_prev = NULL;
+		}
+
+		if (fast_recv(skb)) {
+			ret = NET_RX_SUCCESS;
+			goto out;
+		}
+	}
+skip_fast_recv:
 
 	rx_handler = rcu_dereference(skb->dev->rx_handler);
 	if (rx_handler) {
@@ -5142,7 +5731,12 @@ static int netif_receive_skb_internal(struct sk_buff *skb)
 {
 	int ret;
 
-	net_timestamp_check(READ_ONCE(netdev_tstamp_prequeue), skb);
+	struct net_device *dev = skb->dev;
+	if (dev->sawf_flags & NETDEV_SAWF_FLAG_ENABLED) {
+		netif_sawf_timestamp(skb, dev);
+	} else {
+		net_timestamp_check(READ_ONCE(netdev_tstamp_prequeue), skb);
+	}
 
 	if (skb_defer_rx_timestamp(skb))
 		return NET_RX_SUCCESS;
@@ -5172,7 +5766,13 @@ static void netif_receive_skb_list_internal(struct list_head *head)
 
 	INIT_LIST_HEAD(&sublist);
 	list_for_each_entry_safe(skb, next, head, list) {
-		net_timestamp_check(READ_ONCE(netdev_tstamp_prequeue), skb);
+		struct net_device *dev = skb->dev;
+		if (dev->sawf_flags & NETDEV_SAWF_FLAG_ENABLED) {
+			netif_sawf_timestamp(skb, dev);
+		} else {
+			net_timestamp_check(READ_ONCE(netdev_tstamp_prequeue), skb);
+		}
+
 		skb_list_del_init(skb);
 		if (!skb_defer_rx_timestamp(skb))
 			list_add_tail(&skb->list, &sublist);
@@ -5442,8 +6042,7 @@ static inline void skb_gro_reset_offset(struct sk_buff *skb, u32 nhoff)
 	NAPI_GRO_CB(skb)->frag0 = NULL;
 	NAPI_GRO_CB(skb)->frag0_len = 0;
 
-	if (skb_mac_header(skb) == skb_tail_pointer(skb) &&
-	    pinfo->nr_frags &&
+	if (!skb_headlen(skb) && pinfo->nr_frags &&
 	    !PageHighMem(skb_frag_page(frag0)) &&
 	    (!NET_IP_ALIGN || !((skb_frag_off(frag0) + nhoff) & 3))) {
 		NAPI_GRO_CB(skb)->frag0 = skb_frag_address(frag0);
@@ -5508,6 +6107,9 @@ static enum gro_result dev_gro_receive(struct napi_struct *napi, struct sk_buff 
 	enum gro_result ret;
 	int same_flow;
 	int grow;
+
+	if (skb->gro_skip)
+		goto normal;
 
 	if (netif_elide_gro(skb->dev))
 		goto normal;
@@ -5656,10 +6258,13 @@ static gro_result_t napi_skb_finish(struct napi_struct *napi,
 		break;
 
 	case GRO_MERGED_FREE:
-		if (NAPI_GRO_CB(skb)->free == NAPI_GRO_FREE_STOLEN_HEAD)
+		if (NAPI_GRO_CB(skb)->free == NAPI_GRO_FREE_STOLEN_HEAD){
 			napi_skb_free_stolen_head(skb);
-		else
+			skbuff_debugobj_deactivate(skb);
+		}
+		else{
 			__kfree_skb(skb);
+		}
 		break;
 
 	case GRO_HELD:
@@ -5901,10 +6506,16 @@ static int process_backlog(struct napi_struct *napi, int quota)
 
 	napi->weight = READ_ONCE(dev_rx_weight);
 	while (again) {
-		struct sk_buff *skb;
+		struct sk_buff *skb, *next_skb;
 
 		while ((skb = __skb_dequeue(&sd->process_queue))) {
 			rcu_read_lock();
+
+			next_skb = skb_peek(&sd->process_queue);
+			if (likely(next_skb)) {
+				prefetch(next_skb->data);
+			}
+
 			__netif_receive_skb(skb);
 			rcu_read_unlock();
 			input_queue_head_incr(sd);
@@ -5947,6 +6558,11 @@ static int process_backlog(struct napi_struct *napi, int quota)
 void __napi_schedule(struct napi_struct *n)
 {
 	unsigned long flags;
+
+	if (test_bit(NAPI_STATE_THREADED, &n->state)) {
+		queue_work(napi_workq, &n->work);
+		return;
+	}
 
 	local_irq_save(flags);
 	____napi_schedule(this_cpu_ptr(&softnet_data), n);
@@ -6263,6 +6879,84 @@ static void init_gro_hash(struct napi_struct *napi)
 	napi->gro_bitmask = 0;
 }
 
+static int __napi_poll(struct napi_struct *n, bool *repoll)
+{
+	int work, weight;
+
+	weight = n->weight;
+
+	/* This NAPI_STATE_SCHED test is for avoiding a race
+	 * with netpoll's poll_napi().  Only the entity which
+	 * obtains the lock and sees NAPI_STATE_SCHED set will
+	 * actually make the ->poll() call.  Therefore we avoid
+	 * accidentally calling ->poll() when NAPI is not scheduled.
+	 */
+	work = 0;
+	if (test_bit(NAPI_STATE_SCHED, &n->state)) {
+		work = n->poll(n, weight);
+		trace_napi_poll(n, work, weight);
+	}
+
+	WARN_ON_ONCE(work > weight);
+
+	if (likely(work < weight))
+		return work;
+
+	/* Drivers must not modify the NAPI state if they
+	 * consume the entire weight.  In such cases this code
+	 * still "owns" the NAPI instance and therefore can
+	 * move the instance around on the list at-will.
+	 */
+	if (unlikely(napi_disable_pending(n))) {
+		napi_complete(n);
+		return work;
+	}
+
+	if (n->gro_bitmask) {
+		/* flush too old packets
+		 * If HZ < 1000, flush all packets.
+		 */
+		napi_gro_flush(n, HZ >= 1000);
+	}
+
+	gro_normal_list(n);
+
+	*repoll = true;
+
+	return work;
+}
+
+static void napi_workfn(struct work_struct *work)
+{
+	struct napi_struct *n = container_of(work, struct napi_struct, work);
+	void *have;
+
+	for (;;) {
+		bool repoll = false;
+
+		local_bh_disable();
+
+		have = netpoll_poll_lock(n);
+		__napi_poll(n, &repoll);
+		netpoll_poll_unlock(have);
+
+		local_bh_enable();
+
+		if (!repoll)
+			return;
+
+		if (!need_resched())
+			continue;
+
+		/*
+		 * have to pay for the latency of task switch even if
+		 * napi is scheduled
+		 */
+		queue_work(napi_workq, work);
+		return;
+	}
+}
+
 void netif_napi_add(struct net_device *dev, struct napi_struct *napi,
 		    int (*poll)(struct napi_struct *, int), int weight)
 {
@@ -6282,6 +6976,7 @@ void netif_napi_add(struct net_device *dev, struct napi_struct *napi,
 #ifdef CONFIG_NETPOLL
 	napi->poll_owner = -1;
 #endif
+	INIT_WORK(&napi->work, napi_workfn);
 	set_bit(NAPI_STATE_SCHED, &napi->state);
 	set_bit(NAPI_STATE_NPSVC, &napi->state);
 	list_add_rcu(&napi->dev_list, &dev->napi_list);
@@ -6322,6 +7017,7 @@ static void flush_gro_hash(struct napi_struct *napi)
 void netif_napi_del(struct napi_struct *napi)
 {
 	might_sleep();
+	cancel_work_sync(&napi->work);
 	if (napi_hash_del(napi))
 		synchronize_net();
 	list_del_init(&napi->dev_list);
@@ -6334,50 +7030,18 @@ EXPORT_SYMBOL(netif_napi_del);
 
 static int napi_poll(struct napi_struct *n, struct list_head *repoll)
 {
+	bool do_repoll = false;
 	void *have;
-	int work, weight;
+	int work;
 
 	list_del_init(&n->poll_list);
 
 	have = netpoll_poll_lock(n);
 
-	weight = n->weight;
+	work = __napi_poll(n, &do_repoll);
 
-	/* This NAPI_STATE_SCHED test is for avoiding a race
-	 * with netpoll's poll_napi().  Only the entity which
-	 * obtains the lock and sees NAPI_STATE_SCHED set will
-	 * actually make the ->poll() call.  Therefore we avoid
-	 * accidentally calling ->poll() when NAPI is not scheduled.
-	 */
-	work = 0;
-	if (test_bit(NAPI_STATE_SCHED, &n->state)) {
-		work = n->poll(n, weight);
-		trace_napi_poll(n, work, weight);
-	}
-
-	WARN_ON_ONCE(work > weight);
-
-	if (likely(work < weight))
+	if (!do_repoll)
 		goto out_unlock;
-
-	/* Drivers must not modify the NAPI state if they
-	 * consume the entire weight.  In such cases this code
-	 * still "owns" the NAPI instance and therefore can
-	 * move the instance around on the list at-will.
-	 */
-	if (unlikely(napi_disable_pending(n))) {
-		napi_complete(n);
-		goto out_unlock;
-	}
-
-	if (n->gro_bitmask) {
-		/* flush too old packets
-		 * If HZ < 1000, flush all packets.
-		 */
-		napi_gro_flush(n, HZ >= 1000);
-	}
-
-	gro_normal_list(n);
 
 	/* Some drivers may have called napi_schedule
 	 * prior to exhausting their budget.
@@ -7311,6 +7975,48 @@ static void __netdev_adjacent_dev_unlink_neighbour(struct net_device *dev,
 					   &upper_dev->adj_list.lower);
 }
 
+static void __netdev_addr_mask(unsigned char *mask, const unsigned char *addr,
+			       struct net_device *dev)
+{
+	int i;
+
+	for (i = 0; i < dev->addr_len; i++)
+		mask[i] |= addr[i] ^ dev->dev_addr[i];
+}
+
+static void __netdev_upper_mask(unsigned char *mask, struct net_device *dev,
+				struct net_device *lower)
+{
+	struct net_device *cur;
+	struct list_head *iter;
+
+	netdev_for_each_upper_dev_rcu(dev, cur, iter) {
+		__netdev_addr_mask(mask, cur->dev_addr, lower);
+		__netdev_upper_mask(mask, cur, lower);
+	}
+}
+
+static void __netdev_update_addr_mask(struct net_device *dev)
+{
+	unsigned char mask[MAX_ADDR_LEN];
+	struct net_device *cur;
+	struct list_head *iter;
+
+	memset(mask, 0, sizeof(mask));
+	__netdev_upper_mask(mask, dev, dev);
+	memcpy(dev->local_addr_mask, mask, dev->addr_len);
+
+	netdev_for_each_lower_dev(dev, cur, iter)
+		__netdev_update_addr_mask(cur);
+}
+
+static void netdev_update_addr_mask(struct net_device *dev)
+{
+	rcu_read_lock();
+	__netdev_update_addr_mask(dev);
+	rcu_read_unlock();
+}
+
 static int __netdev_upper_dev_link(struct net_device *dev,
 				   struct net_device *upper_dev, bool master,
 				   void *upper_priv, void *upper_info,
@@ -7361,6 +8067,7 @@ static int __netdev_upper_dev_link(struct net_device *dev,
 	if (ret)
 		return ret;
 
+	netdev_update_addr_mask(dev);
 	ret = call_netdevice_notifiers_info(NETDEV_CHANGEUPPER,
 					    &changeupper_info.info);
 	ret = notifier_to_errno(ret);
@@ -7454,6 +8161,7 @@ void netdev_upper_dev_unlink(struct net_device *dev,
 
 	__netdev_adjacent_dev_unlink_neighbour(dev, upper_dev);
 
+	netdev_update_addr_mask(dev);
 	call_netdevice_notifiers_info(NETDEV_CHANGEUPPER,
 				      &changeupper_info.info);
 
@@ -7657,7 +8365,6 @@ void *netdev_lower_dev_get_private(struct net_device *dev,
 	return lower->private;
 }
 EXPORT_SYMBOL(netdev_lower_dev_get_private);
-
 
 /**
  * netdev_lower_change - Dispatch event about lower device state change
@@ -8184,6 +8891,7 @@ int dev_set_mac_address(struct net_device *dev, struct sockaddr *sa,
 	if (err)
 		return err;
 	dev->addr_assign_type = NET_ADDR_SET;
+	netdev_update_addr_mask(dev);
 	call_netdevice_notifiers(NETDEV_CHANGEADDR, dev);
 	add_device_randomness(dev->dev_addr, dev->addr_len);
 	return 0;
@@ -9169,6 +9877,13 @@ int register_netdevice(struct net_device *dev)
 	 */
 	dev->mpls_features |= NETIF_F_SG;
 
+	/*
+	 * Disable default qdisc on the netdevice if required.
+	 */
+#ifdef CONFIG_DEFAULT_QDISC_DISABLE
+	dev->priv_flags |= IFF_NO_QUEUE;
+#endif
+
 	ret = call_netdevice_notifiers(NETDEV_POST_INIT, dev);
 	ret = notifier_to_errno(ret);
 	if (ret)
@@ -9282,7 +9997,6 @@ int init_dummy_netdev(struct net_device *dev)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(init_dummy_netdev);
-
 
 /**
  *	register_netdev	- register a network device
@@ -9413,7 +10127,6 @@ void netdev_run_todo(void)
 
 	__rtnl_unlock();
 
-
 	/* Wait for rcu callbacks to finish before next phase */
 	if (!list_empty(&list))
 		rcu_barrier();
@@ -9507,6 +10220,40 @@ struct rtnl_link_stats64 *dev_get_stats(struct net_device *dev,
 	return storage;
 }
 EXPORT_SYMBOL(dev_get_stats);
+
+/**
+ *	dev_fetch_sw_netstats - get per-cpu network device statistics
+ *	@s: place to store stats
+ *	@netstats: per-cpu network stats to read from
+ *
+ *	Read per-cpu network statistics and populate the related fields in @s.
+ */
+void dev_fetch_sw_netstats(struct rtnl_link_stats64 *s,
+			   const struct pcpu_sw_netstats __percpu *netstats)
+{
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		const struct pcpu_sw_netstats *stats;
+		struct pcpu_sw_netstats tmp;
+		unsigned int start;
+
+		stats = per_cpu_ptr(netstats, cpu);
+		do {
+			start = u64_stats_fetch_begin_irq(&stats->syncp);
+			tmp.rx_packets = stats->rx_packets;
+			tmp.rx_bytes   = stats->rx_bytes;
+			tmp.tx_packets = stats->tx_packets;
+			tmp.tx_bytes   = stats->tx_bytes;
+		} while (u64_stats_fetch_retry_irq(&stats->syncp, start));
+
+		s->rx_packets += tmp.rx_packets;
+		s->rx_bytes   += tmp.rx_bytes;
+		s->tx_packets += tmp.tx_packets;
+		s->tx_bytes   += tmp.tx_bytes;
+	}
+}
+EXPORT_SYMBOL_GPL(dev_fetch_sw_netstats);
 
 struct netdev_queue *dev_ingress_queue_create(struct net_device *dev)
 {
@@ -10301,6 +11048,10 @@ static int __init net_dev_init(void)
 		sd->backlog.poll = process_backlog;
 		sd->backlog.weight = weight_p;
 	}
+
+	napi_workq = alloc_workqueue("napi_workq", WQ_UNBOUND | WQ_HIGHPRI
+					| WQ_SYSFS, WQ_UNBOUND_MAX_ACTIVE);
+	BUG_ON(!napi_workq);
 
 	dev_boot_phase = 0;
 

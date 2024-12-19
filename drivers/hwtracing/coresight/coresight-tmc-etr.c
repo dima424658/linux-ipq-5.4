@@ -18,13 +18,7 @@
 #include "coresight-etm-perf.h"
 #include "coresight-priv.h"
 #include "coresight-tmc.h"
-
-struct etr_flat_buf {
-	struct device	*dev;
-	dma_addr_t	daddr;
-	void		*vaddr;
-	size_t		size;
-};
+#include "coresight-common.h"
 
 /*
  * etr_perf_buffer - Perf buffer used for ETR
@@ -51,62 +45,6 @@ struct etr_perf_buffer {
 
 /* Lower limit for ETR hardware buffer */
 #define TMC_ETR_PERF_MIN_BUF_SIZE	SZ_1M
-
-/*
- * The TMC ETR SG has a page size of 4K. The SG table contains pointers
- * to 4KB buffers. However, the OS may use a PAGE_SIZE different from
- * 4K (i.e, 16KB or 64KB). This implies that a single OS page could
- * contain more than one SG buffer and tables.
- *
- * A table entry has the following format:
- *
- * ---Bit31------------Bit4-------Bit1-----Bit0--
- * |     Address[39:12]    | SBZ |  Entry Type  |
- * ----------------------------------------------
- *
- * Address: Bits [39:12] of a physical page address. Bits [11:0] are
- *	    always zero.
- *
- * Entry type:
- *	b00 - Reserved.
- *	b01 - Last entry in the tables, points to 4K page buffer.
- *	b10 - Normal entry, points to 4K page buffer.
- *	b11 - Link. The address points to the base of next table.
- */
-
-typedef u32 sgte_t;
-
-#define ETR_SG_PAGE_SHIFT		12
-#define ETR_SG_PAGE_SIZE		(1UL << ETR_SG_PAGE_SHIFT)
-#define ETR_SG_PAGES_PER_SYSPAGE	(PAGE_SIZE / ETR_SG_PAGE_SIZE)
-#define ETR_SG_PTRS_PER_PAGE		(ETR_SG_PAGE_SIZE / sizeof(sgte_t))
-#define ETR_SG_PTRS_PER_SYSPAGE		(PAGE_SIZE / sizeof(sgte_t))
-
-#define ETR_SG_ET_MASK			0x3
-#define ETR_SG_ET_LAST			0x1
-#define ETR_SG_ET_NORMAL		0x2
-#define ETR_SG_ET_LINK			0x3
-
-#define ETR_SG_ADDR_SHIFT		4
-
-#define ETR_SG_ENTRY(addr, type) \
-	(sgte_t)((((addr) >> ETR_SG_PAGE_SHIFT) << ETR_SG_ADDR_SHIFT) | \
-		 (type & ETR_SG_ET_MASK))
-
-#define ETR_SG_ADDR(entry) \
-	(((dma_addr_t)(entry) >> ETR_SG_ADDR_SHIFT) << ETR_SG_PAGE_SHIFT)
-#define ETR_SG_ET(entry)		((entry) & ETR_SG_ET_MASK)
-
-/*
- * struct etr_sg_table : ETR SG Table
- * @sg_table:		Generic SG Table holding the data/table pages.
- * @hwaddr:		hwaddress used by the TMC, which is the base
- *			address of the table.
- */
-struct etr_sg_table {
-	struct tmc_sg_table	*sg_table;
-	dma_addr_t		hwaddr;
-};
 
 /*
  * tmc_etr_sg_table_entries: Total number of table entries required to map
@@ -163,13 +101,14 @@ static void tmc_pages_free(struct tmc_pages *tmc_pages,
 {
 	int i;
 	struct device *real_dev = dev->parent;
+	size_t size = (1 << tmc_pages->order) << PAGE_SHIFT;
 
 	for (i = 0; i < tmc_pages->nr_pages; i++) {
 		if (tmc_pages->daddrs && tmc_pages->daddrs[i])
 			dma_unmap_page(real_dev, tmc_pages->daddrs[i],
-					 PAGE_SIZE, dir);
+					 size, dir);
 		if (tmc_pages->pages && tmc_pages->pages[i])
-			__free_page(tmc_pages->pages[i]);
+			__free_pages(tmc_pages->pages[i], tmc_pages->order);
 	}
 
 	kfree(tmc_pages->pages);
@@ -195,6 +134,7 @@ static int tmc_pages_alloc(struct tmc_pages *tmc_pages,
 	dma_addr_t paddr;
 	struct page *page;
 	struct device *real_dev = dev->parent;
+	size_t size = (1 << tmc_pages->order) << PAGE_SHIFT;
 
 	nr_pages = tmc_pages->nr_pages;
 	tmc_pages->daddrs = kcalloc(nr_pages, sizeof(*tmc_pages->daddrs),
@@ -216,11 +156,12 @@ static int tmc_pages_alloc(struct tmc_pages *tmc_pages,
 			get_page(page);
 		} else {
 			page = alloc_pages_node(node,
-						GFP_KERNEL | __GFP_ZERO, 0);
+						GFP_KERNEL | __GFP_ZERO,
+						tmc_pages->order);
 			if (!page)
 				goto err;
 		}
-		paddr = dma_map_page(real_dev, page, 0, PAGE_SIZE, dir);
+		paddr = dma_map_page(real_dev, page, 0, size, dir);
 		if (dma_mapping_error(real_dev, paddr))
 			goto err;
 		tmc_pages->daddrs[i] = paddr;
@@ -308,13 +249,13 @@ static int tmc_alloc_data_pages(struct tmc_sg_table *sg_table, void **pages)
  * and data buffers. TMC writes to the data buffers and reads from the SG
  * Table pages.
  *
- * @dev		- Coresight device to which page should be DMA mapped.
+ * @drvdata	- TMC driver data
  * @node	- Numa node for mem allocations
  * @nr_tpages	- Number of pages for the table entries.
  * @nr_dpages	- Number of pages for Data buffer.
  * @pages	- Optional list of virtual address of pages.
  */
-struct tmc_sg_table *tmc_alloc_sg_table(struct device *dev,
+struct tmc_sg_table *tmc_alloc_sg_table(struct tmc_drvdata *drvdata,
 					int node,
 					int nr_tpages,
 					int nr_dpages,
@@ -329,7 +270,10 @@ struct tmc_sg_table *tmc_alloc_sg_table(struct device *dev,
 	sg_table->data_pages.nr_pages = nr_dpages;
 	sg_table->table_pages.nr_pages = nr_tpages;
 	sg_table->node = node;
-	sg_table->dev = dev;
+	sg_table->dev = &drvdata->csdev->dev;
+
+	if (drvdata->out_mode == TMC_ETR_OUT_MODE_Q6MEM_STREAM)
+		sg_table->data_pages.order = 1;
 
 	rc  = tmc_alloc_data_pages(sg_table, pages);
 	if (!rc)
@@ -549,13 +493,13 @@ static void tmc_etr_sg_table_populate(struct etr_sg_table *etr_table)
  * tmc_init_etr_sg_table: Allocate a TMC ETR SG table, data buffer of @size and
  * populate the table.
  *
- * @dev		- Device pointer for the TMC
+ * @drvdata	- TMC driver data
  * @node	- NUMA node where the memory should be allocated
  * @size	- Total size of the data buffer
  * @pages	- Optional list of page virtual address
  */
 static struct etr_sg_table *
-tmc_init_etr_sg_table(struct device *dev, int node,
+tmc_init_etr_sg_table(struct tmc_drvdata *drvdata, int node,
 		      unsigned long size, void **pages)
 {
 	int nr_entries, nr_tpages;
@@ -569,7 +513,8 @@ tmc_init_etr_sg_table(struct device *dev, int node,
 	nr_entries = tmc_etr_sg_table_entries(nr_dpages);
 	nr_tpages = DIV_ROUND_UP(nr_entries, ETR_SG_PTRS_PER_SYSPAGE);
 
-	sg_table = tmc_alloc_sg_table(dev, node, nr_tpages, nr_dpages, pages);
+	sg_table = tmc_alloc_sg_table(drvdata, node, nr_tpages, nr_dpages,
+									pages);
 	if (IS_ERR(sg_table)) {
 		kfree(etr_table);
 		return ERR_CAST(sg_table);
@@ -658,9 +603,69 @@ static ssize_t tmc_etr_get_data_flat_buf(struct etr_buf *etr_buf,
 	return len;
 }
 
+static int tmc_etr_set_atid(struct coresight_device *csdev, u32 atid, bool enable)
+{
+	struct tmc_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
+
+	return coresight_csr_set_etr_atid(drvdata->csr, drvdata->atid_offset,
+				atid, enable);
+}
+
+const struct csr_set_atid_op csr_atid_ops = {
+	.set_atid = tmc_etr_set_atid,
+};
+
 static const struct etr_buf_operations etr_flat_buf_ops = {
 	.alloc = tmc_etr_alloc_flat_buf,
 	.free = tmc_etr_free_flat_buf,
+	.sync = tmc_etr_sync_flat_buf,
+	.get_data = tmc_etr_get_data_flat_buf,
+};
+
+static int tmc_etr_alloc_q6mem_buf(struct tmc_drvdata *drvdata,
+				  struct etr_buf *etr_buf, int node,
+				  void **pages)
+{
+	struct etr_flat_buf *flat_buf;
+
+	flat_buf = kzalloc(sizeof(*flat_buf), GFP_KERNEL);
+	if (!flat_buf)
+		return -ENOMEM;
+
+	flat_buf->vaddr = drvdata->q6_etr_vaddr;
+
+	if (!flat_buf->vaddr) {
+		kfree(flat_buf);
+		return -ENOMEM;
+	}
+
+	flat_buf->size = drvdata->q6_size;
+	flat_buf->dev = &drvdata->csdev->dev;
+	etr_buf->hwaddr = drvdata->q6_etr_paddr;
+	etr_buf->mode = ETR_MODE_Q6MEM;
+	etr_buf->private = flat_buf;
+
+	return 0;
+}
+
+/*
+ * Don't free the q6mem ETR region, no-op function to avoid warning
+ * from tmc_free_etr_buf function
+ */
+static void tmc_etr_free_q6mem_buf(struct etr_buf *etr_buf)
+{
+	struct etr_flat_buf *flat_buf = etr_buf->private;
+	kfree(flat_buf);
+}
+
+
+/*
+ * sync and get_data callback are same as in etr_flat_buf_ops,
+ * since Q6 ETR region also a contiguous memory
+ */
+static const struct etr_buf_operations etr_q6mem_buf_ops = {
+	.alloc = tmc_etr_alloc_q6mem_buf,
+	.free = tmc_etr_free_q6mem_buf,
 	.sync = tmc_etr_sync_flat_buf,
 	.get_data = tmc_etr_get_data_flat_buf,
 };
@@ -674,9 +679,8 @@ static int tmc_etr_alloc_sg_buf(struct tmc_drvdata *drvdata,
 				void **pages)
 {
 	struct etr_sg_table *etr_table;
-	struct device *dev = &drvdata->csdev->dev;
 
-	etr_table = tmc_init_etr_sg_table(dev, node,
+	etr_table = tmc_init_etr_sg_table(drvdata, node,
 					  etr_buf->size, pages);
 	if (IS_ERR(etr_table))
 		return -ENOMEM;
@@ -792,6 +796,7 @@ static const struct etr_buf_operations *etr_buf_ops[] = {
 	[ETR_MODE_ETR_SG] = &etr_sg_buf_ops,
 	[ETR_MODE_CATU] = IS_ENABLED(CONFIG_CORESIGHT_CATU)
 						? &etr_catu_buf_ops : NULL,
+	[ETR_MODE_Q6MEM] = &etr_q6mem_buf_ops,
 };
 
 static inline int tmc_etr_mode_alloc_buf(int mode,
@@ -805,6 +810,7 @@ static inline int tmc_etr_mode_alloc_buf(int mode,
 	case ETR_MODE_FLAT:
 	case ETR_MODE_ETR_SG:
 	case ETR_MODE_CATU:
+	case ETR_MODE_Q6MEM:
 		if (etr_buf_ops[mode] && etr_buf_ops[mode]->alloc)
 			rc = etr_buf_ops[mode]->alloc(drvdata, etr_buf,
 						      node, pages);
@@ -858,7 +864,12 @@ static struct etr_buf *tmc_alloc_etr_buf(struct tmc_drvdata *drvdata,
 	 * Fallback to available mechanisms.
 	 *
 	 */
-	if (!pages &&
+	if (drvdata->out_mode == TMC_ETR_OUT_MODE_Q6MEM) {
+		rc = tmc_etr_mode_alloc_buf(ETR_MODE_Q6MEM, drvdata,
+						etr_buf, node, NULL);
+		goto err_check;
+	}
+	if (rc && !pages &&
 	    (!has_sg || has_iommu || size < SZ_1M))
 		rc = tmc_etr_mode_alloc_buf(ETR_MODE_FLAT, drvdata,
 					    etr_buf, node, pages);
@@ -868,6 +879,7 @@ static struct etr_buf *tmc_alloc_etr_buf(struct tmc_drvdata *drvdata,
 	if (rc && has_catu)
 		rc = tmc_etr_mode_alloc_buf(ETR_MODE_CATU, drvdata,
 					    etr_buf, node, pages);
+err_check:
 	if (rc) {
 		kfree(etr_buf);
 		return ERR_PTR(rc);
@@ -879,7 +891,7 @@ static struct etr_buf *tmc_alloc_etr_buf(struct tmc_drvdata *drvdata,
 	return etr_buf;
 }
 
-static void tmc_free_etr_buf(struct etr_buf *etr_buf)
+void tmc_free_etr_buf(struct etr_buf *etr_buf)
 {
 	WARN_ON(!etr_buf->ops || !etr_buf->ops->free);
 	etr_buf->ops->free(etr_buf);
@@ -892,7 +904,7 @@ static void tmc_free_etr_buf(struct etr_buf *etr_buf)
  * Returns: The size of the linear data available @pos, with *bufpp
  * updated to point to the buffer.
  */
-static ssize_t tmc_etr_buf_get_data(struct etr_buf *etr_buf,
+ssize_t tmc_etr_buf_get_data(struct etr_buf *etr_buf,
 				    u64 offset, size_t len, char **bufpp)
 {
 	/* Adjust the length to limit this transaction to end of buffer */
@@ -1000,7 +1012,7 @@ static void __tmc_etr_enable_hw(struct tmc_drvdata *drvdata)
 	CS_LOCK(drvdata->base);
 }
 
-static int tmc_etr_enable_hw(struct tmc_drvdata *drvdata,
+int tmc_etr_enable_hw(struct tmc_drvdata *drvdata,
 			     struct etr_buf *etr_buf)
 {
 	int rc;
@@ -1015,6 +1027,11 @@ static int tmc_etr_enable_hw(struct tmc_drvdata *drvdata,
 
 	if (WARN_ON(drvdata->etr_buf))
 		return -EBUSY;
+
+	if (drvdata->out_mode == TMC_ETR_OUT_MODE_Q6MEM_STREAM)
+		coresight_csr_set_byte_cntr(drvdata->csr, PAGE_SIZE);
+	else
+		coresight_csr_set_byte_cntr(drvdata->csr, 0);
 
 	/*
 	 * If this ETR is connected to a CATU, enable it before we turn
@@ -1098,6 +1115,8 @@ static void __tmc_etr_disable_hw(struct tmc_drvdata *drvdata)
 {
 	CS_UNLOCK(drvdata->base);
 
+	coresight_csr_set_byte_cntr(drvdata->csr, 0);
+
 	tmc_flush_and_stop(drvdata);
 	/*
 	 * When operating in sysFS mode the content of the buffer needs to be
@@ -1112,14 +1131,318 @@ static void __tmc_etr_disable_hw(struct tmc_drvdata *drvdata)
 
 }
 
-static void tmc_etr_disable_hw(struct tmc_drvdata *drvdata)
+void tmc_etr_disable_hw(struct tmc_drvdata *drvdata)
 {
+
+	/*
+	 * When the out_mode is q6mem_stream, TMC HW will be disabled if the
+	 * data is filled in the ETR memory and will be reenabled once processed.
+	 * In cases, like if the TMC HW is already disabled, we just return from here
+	 * without the proper cleanup. So caller will clean up the sysfs_buf
+	 * and same will be accessed when we try to enable the ETR, which will
+	 * cause the Use-After-Free scenarios.
+	 *
+	 * So if the mode is q6mem_stream, do the cleanup irrespective of the
+	 * TMC HW state.
+	 */
+	if (drvdata->out_mode != TMC_ETR_OUT_MODE_Q6MEM_STREAM && !drvdata->enable)
+		return;
+
 	__tmc_etr_disable_hw(drvdata);
 	/* Disable CATU device if this ETR is connected to one */
 	tmc_etr_disable_catu(drvdata);
 	coresight_disclaim_device(drvdata->base);
 	/* Reset the ETR buf used by hardware */
 	drvdata->etr_buf = NULL;
+}
+
+static int tmc_etr_fill_usb_bam_data(struct tmc_drvdata *drvdata)
+{
+	struct tmc_etr_bam_data *bamdata = drvdata->bamdata;
+	dma_addr_t data_fifo_iova, desc_fifo_iova;
+
+	get_qdss_bam_connection_info(&bamdata->dest,
+				    &bamdata->dest_pipe_idx,
+				    &bamdata->src_pipe_idx,
+				    &bamdata->desc_fifo,
+				    &bamdata->data_fifo,
+				    NULL);
+
+	if (bamdata->props.options & SPS_BAM_SMMU_EN) {
+		data_fifo_iova = dma_map_resource(drvdata->csdev->dev.parent,
+			bamdata->data_fifo.phys_base, bamdata->data_fifo.size,
+			DMA_BIDIRECTIONAL, 0);
+		if (!data_fifo_iova)
+			return -ENOMEM;
+		dev_dbg(&drvdata->csdev->dev,
+			"%s:data p_addr:%pa,iova:%pad,size:%x\n",
+			__func__, &(bamdata->data_fifo.phys_base),
+			&data_fifo_iova, bamdata->data_fifo.size);
+		bamdata->data_fifo.iova = data_fifo_iova;
+		desc_fifo_iova = dma_map_resource(drvdata->csdev->dev.parent,
+			bamdata->desc_fifo.phys_base, bamdata->desc_fifo.size,
+			DMA_BIDIRECTIONAL, 0);
+		if (!desc_fifo_iova)
+			return -ENOMEM;
+		dev_dbg(&drvdata->csdev->dev,
+			"%s:desc p_addr:%pa,iova:%pad,size:%x\n",
+			__func__, &(bamdata->desc_fifo.phys_base),
+			&desc_fifo_iova, bamdata->desc_fifo.size);
+		bamdata->desc_fifo.iova = desc_fifo_iova;
+	}
+	return 0;
+}
+
+static void __tmc_etr_enable_to_bam(struct tmc_drvdata *drvdata)
+{
+	struct tmc_etr_bam_data *bamdata = drvdata->bamdata;
+	uint32_t axictl;
+
+	if (drvdata->enable_to_bam)
+		return;
+
+	/* Configure and enable required CSR registers */
+	msm_qdss_csr_enable_bam_to_usb(drvdata->csr);
+
+	/* Configure and enable ETR for usb bam output */
+
+	CS_UNLOCK(drvdata->base);
+
+	writel_relaxed(bamdata->data_fifo.size / 4, drvdata->base + TMC_RSZ);
+	writel_relaxed(TMC_MODE_CIRCULAR_BUFFER, drvdata->base + TMC_MODE);
+
+	axictl = readl_relaxed(drvdata->base + TMC_AXICTL);
+	axictl |= (0xF << 8);
+	writel_relaxed(axictl, drvdata->base + TMC_AXICTL);
+	axictl &= ~(0x1 << 7);
+	writel_relaxed(axictl, drvdata->base + TMC_AXICTL);
+	axictl = (axictl & ~0x3) | 0x2;
+	writel_relaxed(axictl, drvdata->base + TMC_AXICTL);
+
+	if (bamdata->props.options & SPS_BAM_SMMU_EN) {
+		writel_relaxed((uint32_t)bamdata->data_fifo.iova,
+		       drvdata->base + TMC_DBALO);
+		writel_relaxed((((uint64_t)bamdata->data_fifo.iova) >> 32)
+			& 0xFF, drvdata->base + TMC_DBAHI);
+	} else {
+		writel_relaxed((uint32_t)bamdata->data_fifo.phys_base,
+		       drvdata->base + TMC_DBALO);
+		writel_relaxed((((uint64_t)bamdata->data_fifo.phys_base) >> 32)
+			& 0xFF, drvdata->base + TMC_DBAHI);
+	}
+	/* Set FOnFlIn for periodic flush */
+	writel_relaxed(0x133, drvdata->base + TMC_FFCR);
+	writel_relaxed(drvdata->trigger_cntr, drvdata->base + TMC_TRG);
+	tmc_enable_hw(drvdata);
+
+	CS_LOCK(drvdata->base);
+
+	drvdata->enable_to_bam = true;
+}
+
+static int get_usb_bam_iova(struct device *dev, unsigned long usb_bam_handle,
+				unsigned long *iova)
+{
+	int ret = 0;
+	phys_addr_t p_addr;
+	u32 bam_size;
+
+	ret = sps_get_bam_addr(usb_bam_handle, &p_addr, &bam_size);
+	if (ret) {
+		dev_err(dev, "sps_get_bam_addr failed at handle:%lx, err:%d\n",
+			usb_bam_handle, ret);
+		return ret;
+	}
+	*iova = dma_map_resource(dev, p_addr, bam_size, DMA_BIDIRECTIONAL, 0);
+	if (!(*iova))
+		return -ENOMEM;
+	return 0;
+}
+
+static int tmc_etr_bam_enable(struct tmc_drvdata *drvdata)
+{
+	struct tmc_etr_bam_data *bamdata = drvdata->bamdata;
+	unsigned long iova;
+	int ret;
+
+	if (bamdata->enable)
+		return 0;
+
+	/* Reset bam to start with */
+	ret = sps_device_reset(bamdata->handle);
+	if (ret)
+		goto err0;
+
+	/* Now configure and enable bam */
+
+	bamdata->pipe = sps_alloc_endpoint();
+	if (!bamdata->pipe)
+		return -ENOMEM;
+
+	ret = sps_get_config(bamdata->pipe, &bamdata->connect);
+	if (ret)
+		goto err1;
+
+	bamdata->connect.mode = SPS_MODE_SRC;
+	bamdata->connect.source = bamdata->handle;
+	bamdata->connect.event_thresh = 0x4;
+	bamdata->connect.src_pipe_index = TMC_ETR_BAM_PIPE_INDEX;
+	bamdata->connect.options = SPS_O_AUTO_ENABLE;
+
+	bamdata->connect.destination = bamdata->dest;
+	bamdata->connect.dest_pipe_index = bamdata->dest_pipe_idx;
+	bamdata->connect.desc = bamdata->desc_fifo;
+	bamdata->connect.data = bamdata->data_fifo;
+
+	if (bamdata->props.options & SPS_BAM_SMMU_EN) {
+		ret = get_usb_bam_iova(drvdata->csdev->dev.parent,
+				bamdata->dest, &iova);
+		if (ret)
+			goto err1;
+		bamdata->connect.dest_iova = iova;
+	}
+	ret = sps_connect(bamdata->pipe, &bamdata->connect);
+	if (ret)
+		goto err1;
+
+	bamdata->enable = true;
+	return 0;
+err1:
+	sps_free_endpoint(bamdata->pipe);
+err0:
+	return ret;
+}
+
+static void tmc_wait_for_flush(struct tmc_drvdata *drvdata)
+{
+	int count;
+
+	/* Ensure no flush is in progress */
+	for (count = TIMEOUT_US;
+	     BVAL(readl_relaxed(drvdata->base + TMC_FFSR), 0) != 0
+	     && count > 0; count--)
+		udelay(1);
+	WARN(count == 0, "timeout while waiting for TMC flush, TMC_FFSR: %#x\n",
+	     readl_relaxed(drvdata->base + TMC_FFSR));
+}
+
+void __tmc_etr_disable_to_bam(struct tmc_drvdata *drvdata)
+{
+	if (!drvdata->enable_to_bam)
+		return;
+
+	/* Ensure periodic flush is disabled in CSR block */
+	msm_qdss_csr_disable_flush(drvdata->csr);
+
+	CS_UNLOCK(drvdata->base);
+
+	tmc_wait_for_flush(drvdata);
+	tmc_disable_hw(drvdata);
+
+	CS_LOCK(drvdata->base);
+
+	/* Disable CSR configuration */
+	msm_qdss_csr_disable_bam_to_usb(drvdata->csr);
+	drvdata->enable_to_bam = false;
+}
+
+void tmc_etr_bam_disable(struct tmc_drvdata *drvdata)
+{
+	struct tmc_etr_bam_data *bamdata = drvdata->bamdata;
+
+	if (!bamdata->enable)
+		return;
+
+	sps_disconnect(bamdata->pipe);
+	sps_free_endpoint(bamdata->pipe);
+	bamdata->enable = false;
+}
+
+void usb_notifier(void *priv, unsigned int event, struct qdss_request *d_req,
+		  struct usb_qdss_ch *ch)
+{
+	struct tmc_drvdata *drvdata = priv;
+	unsigned long flags;
+	int ret = 0;
+
+	mutex_lock(&drvdata->mem_lock);
+
+	if (drvdata->out_mode != TMC_ETR_OUT_MODE_USB
+			|| drvdata->mode == CS_MODE_DISABLED) {
+		dev_err(&drvdata->csdev->dev,
+		"%s: ETR is not USB mode, or ETR is disabled.\n", __func__);
+		mutex_unlock(&drvdata->mem_lock);
+		return;
+	}
+
+	if (event == USB_QDSS_CONNECT) {
+		ret = tmc_etr_fill_usb_bam_data(drvdata);
+		if (ret)
+			dev_err(&drvdata->csdev->dev,
+			"ETR get usb bam data failed\n");
+		ret = tmc_etr_bam_enable(drvdata);
+		if (ret)
+			dev_err(&drvdata->csdev->dev,
+			"ETR BAM enable failed\n");
+
+		spin_lock_irqsave(&drvdata->spinlock, flags);
+		__tmc_etr_enable_to_bam(drvdata);
+		spin_unlock_irqrestore(&drvdata->spinlock, flags);
+	} else if (event == USB_QDSS_DISCONNECT) {
+		spin_lock_irqsave(&drvdata->spinlock, flags);
+		__tmc_etr_disable_to_bam(drvdata);
+		spin_unlock_irqrestore(&drvdata->spinlock, flags);
+		tmc_etr_bam_disable(drvdata);
+	}
+	mutex_unlock(&drvdata->mem_lock);
+}
+
+int tmc_etr_bam_init(struct amba_device *adev,
+		     struct tmc_drvdata *drvdata)
+{
+	int ret;
+	struct device *dev = &adev->dev;
+	struct resource res;
+	struct tmc_etr_bam_data *bamdata;
+#ifdef CONFIG_IOMMU_API
+	int s1_bypass = 0;
+	struct iommu_domain *domain;
+#endif
+
+	bamdata = devm_kzalloc(dev, sizeof(*bamdata), GFP_KERNEL);
+	if (!bamdata)
+		return -ENOMEM;
+	drvdata->bamdata = bamdata;
+
+	ret = of_address_to_resource(adev->dev.of_node, 1, &res);
+	if (ret)
+		return -ENODEV;
+
+	bamdata->props.phys_addr = res.start;
+	bamdata->props.virt_addr = devm_ioremap(dev, res.start,
+						resource_size(&res));
+	if (!bamdata->props.virt_addr)
+		return -ENOMEM;
+	bamdata->props.virt_size = resource_size(&res);
+
+	bamdata->props.event_threshold = 0x4; /* Pipe event threshold */
+	bamdata->props.summing_threshold = 0x10; /* BAM event threshold */
+	bamdata->props.irq = 0;
+	bamdata->props.num_pipes = TMC_ETR_BAM_NR_PIPES;
+#ifdef CONFIG_IOMMU_API
+	domain = iommu_get_domain_for_dev(dev);
+	if (domain) {
+		iommu_domain_get_attr(domain, DOMAIN_ATTR_S1_BYPASS,
+			&s1_bypass);
+		if (!s1_bypass) {
+			pr_info("%s: setting SPS_BAM_SMMU_EN flag with (%s)\n",
+			__func__, dev_name(dev));
+			bamdata->props.options |= SPS_BAM_SMMU_EN;
+		}
+	}
+#endif
+
+	return sps_register_bam_device(&bamdata->props, &bamdata->handle);
 }
 
 static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
@@ -1139,15 +1462,36 @@ static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
 	 */
 	spin_lock_irqsave(&drvdata->spinlock, flags);
 	sysfs_buf = READ_ONCE(drvdata->sysfs_buf);
-	if (!sysfs_buf || (sysfs_buf->size != drvdata->size)) {
+	if (!sysfs_buf || (sysfs_buf->size != drvdata->size)
+			|| !drvdata->usbch) {
 		spin_unlock_irqrestore(&drvdata->spinlock, flags);
 
-		/* Allocate memory with the locks released */
-		free_buf = new_buf = tmc_etr_setup_sysfs_buf(drvdata);
-		if (IS_ERR(new_buf))
-			return PTR_ERR(new_buf);
-
-		/* Let's try again */
+		if (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM ||
+			drvdata->out_mode == TMC_ETR_OUT_MODE_Q6MEM ||
+			drvdata->out_mode == TMC_ETR_OUT_MODE_Q6MEM_STREAM) {
+			/*
+			 * ETR DDR memory is not allocated until user enables
+			 * tmc at least once. If user specifies different ETR
+			 * DDR size than the default size or switches between
+			 * contiguous or scatter-gather memory type after
+			 * enabling tmc; the new selection will be honored from
+			 * next tmc enable session.
+			 */
+			/* Allocate memory with the locks released */
+			free_buf = new_buf = tmc_etr_setup_sysfs_buf(drvdata);
+			if (IS_ERR(new_buf)) {
+				return -ENOMEM;
+			}
+			coresight_cti_map_trigout(drvdata->cti_flush, 3, 0);
+			coresight_cti_map_trigin(drvdata->cti_reset, 2, 0);
+		} else {
+			drvdata->usbch = usb_qdss_open("qdss", drvdata,
+								usb_notifier);
+			if (IS_ERR_OR_NULL(drvdata->usbch)) {
+				dev_err(&csdev->dev, "usb_qdss_open failed\n");
+				return -ENODEV;
+			}
+		}
 		spin_lock_irqsave(&drvdata->spinlock, flags);
 	}
 
@@ -1171,22 +1515,37 @@ static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
 	 * use the buffer allocated above. Otherwise reuse the existing buffer.
 	 */
 	sysfs_buf = READ_ONCE(drvdata->sysfs_buf);
-	if (!sysfs_buf || (new_buf && sysfs_buf->size != new_buf->size)) {
+	/*
+	 * Always use the new_buf, since for Q6MEM_STREAM, we use the SG with
+	 * data page size as 8K. In other modes, data page size will be 4K.
+	 * So if we use the existing sysfs_buf across the out_mode,
+	 * undefined behavior will be observed.
+	 */
+	if (new_buf) {
 		free_buf = sysfs_buf;
 		drvdata->sysfs_buf = new_buf;
 	}
-
-	ret = tmc_etr_enable_hw(drvdata, drvdata->sysfs_buf);
+	if (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM ||
+		drvdata->out_mode == TMC_ETR_OUT_MODE_Q6MEM ||
+		drvdata->out_mode == TMC_ETR_OUT_MODE_Q6MEM_STREAM) {
+		ret = tmc_etr_enable_hw(drvdata, drvdata->sysfs_buf);
+	}
 	if (!ret) {
 		drvdata->mode = CS_MODE_SYSFS;
 		atomic_inc(csdev->refcnt);
 	}
+	drvdata->enable = true;
 out:
 	spin_unlock_irqrestore(&drvdata->spinlock, flags);
 
 	/* Free memory outside the spinlock if need be */
 	if (free_buf)
 		tmc_etr_free_sysfs_buf(free_buf);
+
+#ifdef CONFIG_CORESIGHT_BYTE_CNTR
+	if (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM)
+		tmc_etr_byte_cntr_start(drvdata->byte_cntr);
+#endif
 
 	if (!ret)
 		dev_dbg(&csdev->dev, "TMC-ETR enabled\n");
@@ -1616,18 +1975,25 @@ unlock_out:
 static int tmc_enable_etr_sink(struct coresight_device *csdev,
 			       u32 mode, void *data)
 {
+	struct tmc_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
+	int ret;
+
 	switch (mode) {
 	case CS_MODE_SYSFS:
-		return tmc_enable_etr_sink_sysfs(csdev);
+		mutex_lock(&drvdata->mem_lock);
+		ret = tmc_enable_etr_sink_sysfs(csdev);
+		mutex_unlock(&drvdata->mem_lock);
+		return ret;
+
 	case CS_MODE_PERF:
 		return tmc_enable_etr_sink_perf(csdev, data);
 	}
-
 	/* We shouldn't be here */
 	return -EINVAL;
 }
 
-static int tmc_disable_etr_sink(struct coresight_device *csdev)
+static int _tmc_disable_etr_sink(struct coresight_device *csdev,
+			bool mode_switch)
 {
 	unsigned long flags;
 	struct tmc_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
@@ -1639,14 +2005,27 @@ static int tmc_disable_etr_sink(struct coresight_device *csdev)
 		return -EBUSY;
 	}
 
-	if (atomic_dec_return(csdev->refcnt)) {
+	if (atomic_dec_return(csdev->refcnt) && !mode_switch) {
 		spin_unlock_irqrestore(&drvdata->spinlock, flags);
 		return -EBUSY;
 	}
 
 	/* Complain if we (somehow) got out of sync */
 	WARN_ON_ONCE(drvdata->mode == CS_MODE_DISABLED);
-	tmc_etr_disable_hw(drvdata);
+	if (drvdata->mode != CS_MODE_DISABLED) {
+		if (drvdata->out_mode == TMC_ETR_OUT_MODE_USB) {
+			__tmc_etr_disable_to_bam(drvdata);
+			spin_unlock_irqrestore(&drvdata->spinlock, flags);
+			tmc_etr_bam_disable(drvdata);
+			usb_qdss_close(drvdata->usbch);
+			drvdata->usbch = NULL;
+			drvdata->mode = CS_MODE_DISABLED;
+			goto out;
+		} else {
+			tmc_etr_disable_hw(drvdata);
+		}
+		drvdata->mode = CS_MODE_DISABLED;
+	}
 	/* Dissociate from monitored process. */
 	drvdata->pid = -1;
 	drvdata->mode = CS_MODE_DISABLED;
@@ -1655,8 +2034,137 @@ static int tmc_disable_etr_sink(struct coresight_device *csdev)
 
 	spin_unlock_irqrestore(&drvdata->spinlock, flags);
 
-	dev_dbg(&csdev->dev, "TMC-ETR disabled\n");
+#ifdef CONFIG_CORESIGHT_BYTE_CNTR
+	tmc_etr_byte_cntr_stop(drvdata->byte_cntr);
+#endif
+	coresight_cti_unmap_trigin(drvdata->cti_reset, 2, 0);
+	coresight_cti_unmap_trigout(drvdata->cti_flush, 3, 0);
+	/* Free memory outside the spinlock if need be */
+	if (drvdata->etr_buf) {
+		tmc_etr_free_sysfs_buf(drvdata->etr_buf);
+		drvdata->etr_buf = NULL;
+	}
+
+	/*
+	 * When doing the out_mode switch, new buffer will be allocated
+	 * and if there are any existing work is still being processed,
+	 * undefined behaviour will be observed. So make sure all the pending
+	 * work is flushed.
+	 */
+	if (drvdata->out_mode == TMC_ETR_OUT_MODE_Q6MEM_STREAM)
+		flush_work(&drvdata->qld_stream_work);
+out:
+	dev_info(&csdev->dev, "TMC-ETR disabled\n");
 	return 0;
+}
+
+static int tmc_disable_etr_sink(struct coresight_device *csdev)
+{
+	struct tmc_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
+	int ret;
+
+	mutex_lock(&drvdata->mem_lock);
+	ret = _tmc_disable_etr_sink(csdev, false);
+	mutex_unlock(&drvdata->mem_lock);
+	return ret;
+}
+
+int tmc_etr_switch_mode(struct tmc_drvdata *drvdata, const char *out_mode)
+{
+	enum tmc_etr_out_mode new_mode, old_mode;
+
+	mutex_lock(&drvdata->mem_lock);
+	if (!strcmp(out_mode, str_tmc_etr_out_mode[TMC_ETR_OUT_MODE_MEM]))
+		new_mode = TMC_ETR_OUT_MODE_MEM;
+	else if (!strcmp(out_mode, str_tmc_etr_out_mode[TMC_ETR_OUT_MODE_USB]))
+		new_mode = TMC_ETR_OUT_MODE_USB;
+	else if (!strcmp(out_mode, str_tmc_etr_out_mode[TMC_ETR_OUT_MODE_Q6MEM]))
+		new_mode = TMC_ETR_OUT_MODE_Q6MEM;
+	else if (!strcmp(out_mode,
+			str_tmc_etr_out_mode[TMC_ETR_OUT_MODE_Q6MEM_STREAM]))
+		new_mode = TMC_ETR_OUT_MODE_Q6MEM_STREAM;
+	else {
+		mutex_unlock(&drvdata->mem_lock);
+		return -EINVAL;
+	}
+
+	if (new_mode == drvdata->out_mode) {
+		mutex_unlock(&drvdata->mem_lock);
+		return 0;
+	}
+
+	if (drvdata->mode == CS_MODE_DISABLED) {
+		drvdata->out_mode = new_mode;
+		mutex_unlock(&drvdata->mem_lock);
+		return 0;
+	}
+
+	_tmc_disable_etr_sink(drvdata->csdev, true);
+	old_mode = drvdata->out_mode;
+	drvdata->out_mode = new_mode;
+	if (tmc_enable_etr_sink_sysfs(drvdata->csdev)) {
+		drvdata->out_mode = old_mode;
+		tmc_enable_etr_sink_sysfs(drvdata->csdev);
+		dev_err(&drvdata->csdev->dev,
+			"Switch to %s failed. Fall back to %s.\n",
+			str_tmc_etr_out_mode[new_mode],
+			str_tmc_etr_out_mode[old_mode]);
+		mutex_unlock(&drvdata->mem_lock);
+		return -EINVAL;
+	}
+
+	mutex_unlock(&drvdata->mem_lock);
+	return 0;
+}
+
+static void __tmc_etr_disable_q6mem(struct tmc_drvdata *drvdata)
+{
+	uint32_t val[4];
+	uint32_t phy_offset;
+	void __iomem *q6_etr_waddr;
+
+	if (drvdata->in_funnel_base) {
+		CS_UNLOCK(drvdata->in_funnel_base);
+		writel_relaxed(0, drvdata->in_funnel_base + 0x0);
+		CS_LOCK(drvdata->in_funnel_base);
+	}
+
+	tmc_etr_disable_hw(drvdata);
+
+	val[0] = 0xdeadbeef;
+	val[1] = readl_relaxed(drvdata->base + TMC_STS);
+	val[2] = readl_relaxed(drvdata->base + TMC_RRP);
+	val[3] = readl_relaxed(drvdata->base + TMC_RWP);
+
+	phy_offset = ((dma_addr_t)val[2] - drvdata->q6_etr_paddr) & 0xffffffff;
+	q6_etr_waddr = drvdata->q6_etr_vaddr + phy_offset;
+
+	memcpy_toio(q6_etr_waddr, &val[0], sizeof(val));
+
+	dev_info(&drvdata->csdev->dev, "RRP: 0x%x RWP: 0x%x STS: 0x%x\n",
+					val[2], val[3], val[1]);
+}
+
+static void tmc_abort_etr_sink(struct coresight_device *csdev)
+{
+	struct tmc_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
+	unsigned long flags;
+
+	spin_lock_irqsave(&drvdata->spinlock, flags);
+	if (drvdata->reading)
+		goto out0;
+
+	if (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM)
+		tmc_etr_disable_hw(drvdata);
+	else if (drvdata->out_mode == TMC_ETR_OUT_MODE_USB)
+		__tmc_etr_disable_to_bam(drvdata);
+	else if (drvdata->out_mode == TMC_ETR_OUT_MODE_Q6MEM)
+		__tmc_etr_disable_q6mem(drvdata);
+out0:
+	drvdata->enable = false;
+	spin_unlock_irqrestore(&drvdata->spinlock, flags);
+
+	dev_info(&drvdata->csdev->dev, "TMC aborted\n");
 }
 
 static const struct coresight_ops_sink tmc_etr_sink_ops = {
@@ -1665,6 +2173,7 @@ static const struct coresight_ops_sink tmc_etr_sink_ops = {
 	.alloc_buffer	= tmc_alloc_etr_buffer,
 	.update_buffer	= tmc_update_etr_buffer,
 	.free_buffer	= tmc_free_etr_buffer,
+	.abort		= tmc_abort_etr_sink,
 };
 
 const struct coresight_ops tmc_etr_cs_ops = {
@@ -1680,18 +2189,29 @@ int tmc_read_prepare_etr(struct tmc_drvdata *drvdata)
 	if (WARN_ON_ONCE(drvdata->config_type != TMC_CONFIG_TYPE_ETR))
 		return -EINVAL;
 
+	mutex_lock(&drvdata->mem_lock);
 	spin_lock_irqsave(&drvdata->spinlock, flags);
 	if (drvdata->reading) {
 		ret = -EBUSY;
 		goto out;
 	}
 
+	if (drvdata->out_mode == TMC_ETR_OUT_MODE_USB ||
+		drvdata->out_mode == TMC_ETR_OUT_MODE_Q6MEM_STREAM) {
+		ret = -EINVAL;
+		goto out;
+	}
 	/*
 	 * We can safely allow reads even if the ETR is operating in PERF mode,
 	 * since the sysfs session is captured in mode specific data.
 	 * If drvdata::sysfs_data is NULL the trace data has been read already.
 	 */
 	if (!drvdata->sysfs_buf) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	if (drvdata->byte_cntr && drvdata->byte_cntr->enable) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -1703,6 +2223,7 @@ int tmc_read_prepare_etr(struct tmc_drvdata *drvdata)
 	drvdata->reading = true;
 out:
 	spin_unlock_irqrestore(&drvdata->spinlock, flags);
+	mutex_unlock(&drvdata->mem_lock);
 
 	return ret;
 }
@@ -1715,7 +2236,7 @@ int tmc_read_unprepare_etr(struct tmc_drvdata *drvdata)
 	/* config types are set a boot time and never change */
 	if (WARN_ON_ONCE(drvdata->config_type != TMC_CONFIG_TYPE_ETR))
 		return -EINVAL;
-
+	mutex_lock(&drvdata->mem_lock);
 	spin_lock_irqsave(&drvdata->spinlock, flags);
 
 	/* RE-enable the TMC if need be */
@@ -1742,5 +2263,7 @@ int tmc_read_unprepare_etr(struct tmc_drvdata *drvdata)
 	if (sysfs_buf)
 		tmc_etr_free_sysfs_buf(sysfs_buf);
 
+
+	mutex_unlock(&drvdata->mem_lock);
 	return 0;
 }
